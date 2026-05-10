@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.git/
+macro_poc/
+test_*.py
+*.html
+*.txt
+!requirements.txt

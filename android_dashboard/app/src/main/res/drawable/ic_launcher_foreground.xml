@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Global Economic Radar – Professional financial dashboard icon -->
+<!-- Deep navy background, bar chart with ascending teal trend line -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Base line (axis) -->
+    <path
+        android:strokeColor="#3D4451"
+        android:strokeWidth="1.5"
+        android:fillColor="#00000000"
+        android:pathData="M22,76 L86,76" />
+
+    <!-- Bar 1 – short, teal -->
+    <path
+        android:fillColor="#4DD0CF"
+        android:fillAlpha="0.85"
+        android:pathData="M26,76 L26,60 L34,60 L34,76 Z" />
+
+    <!-- Bar 2 – medium, blue -->
+    <path
+        android:fillColor="#60A5FA"
+        android:fillAlpha="0.85"
+        android:pathData="M38,76 L38,50 L46,50 L46,76 Z" />
+
+    <!-- Bar 3 – medium-tall, green -->
+    <path
+        android:fillColor="#34D399"
+        android:fillAlpha="0.85"
+        android:pathData="M50,76 L50,55 L58,55 L58,76 Z" />
+
+    <!-- Bar 4 – tallest, purple -->
+    <path
+        android:fillColor="#A78BFA"
+        android:fillAlpha="0.85"
+        android:pathData="M62,76 L62,40 L70,40 L70,76 Z" />
+
+    <!-- Bar 5 – tall, warm amber -->
+    <path
+        android:fillColor="#FBBF24"
+        android:fillAlpha="0.85"
+        android:pathData="M74,76 L74,44 L82,44 L82,76 Z" />
+
+    <!-- Trend line – ascending, teal glow -->
+    <path
+        android:strokeColor="#4DD0CF"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M30,64 C38,56 46,52 54,58 C62,48 68,40 78,36" />
+
+    <!-- Trend line endpoint dot -->
+    <path
+        android:fillColor="#4DD0CF"
+        android:pathData="M78,36 m-3.5,0 a3.5,3.5 0 1,0 7,0 a3.5,3.5 0 1,0 -7,0" />
+
+</vector>

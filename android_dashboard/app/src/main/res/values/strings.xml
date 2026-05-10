@@ -1,0 +1,27 @@
+<resources>
+    <string name="app_name">全球經濟雷達</string>
+    <string name="tab_demand">需求感測</string>
+    <string name="tab_cost">成本獲利</string>
+    <string name="tab_risk">風險流動</string>
+    <string name="settings_title">設定</string>
+    <string name="fred_key_label">FRED API 金鑰</string>
+    <string name="fred_key_hint">輸入您的 FRED API Key</string>
+    <string name="fred_key_help">免費申請：https://fred.stlouisfed.org/docs/api/api_key.html</string>
+    <string name="range_3y">3Y</string>
+    <string name="range_5y">5Y</string>
+    <string name="range_8y">8Y</string>
+    <string name="range_10y">10Y</string>
+    <string name="loading">載入資料中…</string>
+    <string name="error_retry">重試</string>
+    <string name="no_api_key">請先在設定中輸入 FRED API Key</string>
+    <string name="refreshing">更新資料中…</string>
+    <string name="last_updated">最後更新：%s</string>
+    <string name="expansion">擴張</string>
+    <string name="contraction">收縮</string>
+    <string name="neutral">中性</string>
+    <string name="above_trend">高於趨勢</string>
+    <string name="below_trend">低於趨勢</string>
+    <string name="high_risk">高風險</string>
+    <string name="moderate_risk">中等風險</string>
+    <string name="low_risk">低風險</string>
+</resources>

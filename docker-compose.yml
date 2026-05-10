@@ -1,0 +1,7 @@
+services:
+  dashboard:
+    build: .
+    container_name: macro-dashboard
+    ports:
+      - "8501:8501"
+    restart: unless-stopped

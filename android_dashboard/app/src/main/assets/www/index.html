@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>全球經濟指標儀表板</title>
+  <meta name="description" content="PMI、領先指標、M1B、出口、VIX、殖利率曲線 - 全球經濟總覽" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ═══ HEADER ═══ -->
+  <header class="app-header">
+    <div class="header-top">
+      <div class="header-title">
+        <span class="logo">📊</span>
+        <div>
+          <h1>全球經濟指標儀表板</h1>
+          <div class="header-subtitle">PMI · CLI · M1B · 出口 · VIX · 殖利率</div>
+        </div>
+      </div>
+      <div class="status-dot" id="status-badge">
+        <span class="dot"></span>
+        <span id="last-updated">載入中…</span>
+      </div>
+    </div>
+    <nav class="tab-nav" id="tab-nav">
+      <button class="tab-btn active" data-tab="panel-a">🏭 需求</button>
+      <button class="tab-btn" data-tab="panel-b">📐 成本</button>
+      <button class="tab-btn" data-tab="panel-c">💧 流動性</button>
+    </nav>
+  </header>
+
+  <!-- ═══ SETTINGS BAR ═══ -->
+  <div class="settings-bar" id="settings-bar">
+    <button class="pill active" data-range="3">3Y</button>
+    <button class="pill" data-range="5">5Y</button>
+    <button class="pill" data-range="8">8Y</button>
+    <button class="pill" data-range="10">10Y</button>
+    <button class="api-key-btn" id="btn-api-key">🔑 API Key</button>
+  </div>
+
+  <!-- ═══ ERROR PANEL ═══ -->
+  <div class="error-panel" id="error-panel">
+    <span>⚠️</span>
+    <span id="error-msg">發生錯誤</span>
+    <button class="btn-retry" id="btn-retry">重試</button>
+  </div>
+
+  <!-- ═══ MAIN ═══ -->
+  <main class="main-content">
+
+    <!-- ────── PANEL A: 終端需求感測 ────── -->
+    <div class="tab-panel active" id="panel-a">
+
+      <!-- PMI -->
+      <div class="section-label"><span class="icon">🏭</span> 製造業 PMI 採購經理人指數</div>
+
+      <div class="info-panel" id="info-pmi">
+        <div class="info-panel-header" onclick="toggleInfo('info-pmi')">
+          <h3>ℹ️ PMI 指標說明</h3>
+          <span class="chevron">▼</span>
+        </div>
+        <div class="info-panel-body">
+          <div class="info-panel-content">
+            <strong>PMI（Purchasing Managers' Index）</strong>是衡量製造業景氣擴張或収縮的先行指標，由採購經理人對 <strong>新訂單、生產、就業、供應商交貨、庫存</strong> 等子項進行問卷調查後編制。
+            <ul>
+              <li><span class="highlight">PMI > 50</span>：代表製造業處於<strong>擴張</strong>期，經濟活動增加</li>
+              <li><span class="warn">PMI < 50</span>：代表製造業處於<strong>收縮</strong>期，經濟活動萎縮</li>
+              <li><span class="highlight">PMI = 50</span>：為榮枯分界線</li>
+            </ul>
+            <strong>資料來源：</strong>
+            <ul>
+              <li>🇺🇸 美國：ISM（5項子指標複合）</li>
+              <li>🇹🇼 台灣：CIER 中經院製造業 PMI</li>
+              <li>🇨🇳 中國：NBS 國家統計局製造業 PMI</li>
+              <li>🇯🇵 日本：內閣府景氣觀測調查 DI</li>
+              <li>🇪🇺 歐元區：Eurostat 工業信心指標 ICI (+50)</li>
+            </ul>
+            <strong>投資意義：</strong>PMI 領先 GDP 約 1-2 季，是判斷景氣循環轉折的關鍵指標。連續 3 個月 > 50 代表復甦確認；持續下滑則預示需求放緩。
+          </div>
+        </div>
+      </div>
+
+      <div class="card-strip" id="pmi-cards"></div>
+
+      <div class="legend-row" id="pmi-legends"></div>
+
+      <div class="chart-section">
+        <div class="chart-header">
+          <div class="chart-title">PMI 製造業採購經理人指數趨勢</div>
+          <div class="chart-desc">50 以上為擴張，50 以下為收縮</div>
+          <div class="source-badges">
+            <span class="source-badge">ISM</span>
+            <span class="source-badge">NBS</span>
+            <span class="source-badge">CIER</span>
+            <span class="source-badge">S&P Global</span>
+          </div>
+        </div>
+        <div class="chart-wrapper">
+          <div class="chart-loading" id="pmi-loading"><div class="spinner"></div><span>載入資料中…</span></div>
+          <canvas id="pmi-chart"></canvas>
+        </div>
+      </div>
+
+      <!-- Taiwan Export -->
+      <div class="section-label"><span class="icon">🚢</span> 台灣出口年增率 (YoY)</div>
+
+      <div class="info-panel" id="info-export">
+        <div class="info-panel-header" onclick="toggleInfo('info-export')">
+          <h3>ℹ️ 出口指標說明</h3>
+          <span class="chevron">▼</span>
+        </div>
+        <div class="info-panel-body">
+          <div class="info-panel-content">
+            台灣出口金額 Year-over-Year 年增率，反映全球終端需求強弱。
+            <ul>
+              <li><span class="highlight">YoY > 0%</span>：出口正成長，全球需求擴張</li>
+              <li><span class="warn">YoY < 0%</span>：出口萎縮，全球需求放緩</li>
+            </ul>
+            <strong>為何重要：</strong>台灣以半導體和電子零組件出口為主，是全球科技供應鏈的關鍵樞紐。台灣出口 YoY 通常領先全球科技股約 1-2 個月。
+            <br/><strong>資料來源：</strong>財政部統計處 / FRED / OECD MEI
+          </div>
+        </div>
+      </div>
+
+      <div class="card-strip cols-1" id="export-cards"></div>
+
+      <div class="chart-section">
+        <div class="chart-header">
+          <div class="chart-title">台灣出口年增率 (YoY %)</div>
+          <div class="chart-desc">與前一年同期相比的出口金額變動百分比</div>
+          <div class="source-badges">
+            <span class="source-badge">FRED</span>
+            <span class="source-badge">OECD MEI</span>
+          </div>
+        </div>
+        <div class="chart-wrapper">
+          <div class="chart-loading" id="export-loading"><div class="spinner"></div><span>載入資料中…</span></div>
+          <canvas id="export-chart"></canvas>
+        </div>
+      </div>
+
+      <!-- M1B Money Supply -->
+      <div class="section-label"><span class="icon">💰</span> M1B 貨幣供給年增率</div>
+
+      <div class="info-panel" id="info-m1b">
+        <div class="info-panel-header" onclick="toggleInfo('info-m1b')">
+          <h3>ℹ️ M1B 貨幣供給說明</h3>
+          <span class="chevron">▼</span>
+        </div>
+        <div class="info-panel-body">
+          <div class="info-panel-content">
+            <strong>M1B</strong> = 通貨淨額 + 支票存款 + 活期儲蓄存款。反映民間資金的「活水」程度。
+            <ul>
+              <li><span class="highlight">M1B YoY 上升</span>：資金動能增加，有利股市</li>
+              <li><span class="highlight">M1B YoY > M2 YoY（黃金交叉）</span>：資金從定存轉入活存、流入股市的訊號</li>
+              <li><span class="warn">M1B YoY < M2 YoY（死亡交叉）</span>：資金保守化，流出股市</li>
+            </ul>
+            <strong>資料來源：</strong>中央銀行金融統計月報 / FRED (美國 M1)
+          </div>
+        </div>
+      </div>
+
+      <div class="card-strip cols-2" id="money-cards"></div>
+
+      <div class="chart-section">
+        <div class="chart-header">
+          <div class="chart-title">M1B 貨幣供給年增率 (YoY %)</div>
+          <div class="chart-desc">正值代表貨幣供給擴張，負值代表收縮</div>
+          <div class="source-badges">
+            <span class="source-badge">FRED</span>
+            <span class="source-badge">OECD MEI</span>
+          </div>
+        </div>
+        <div class="chart-wrapper">
+          <div class="chart-loading" id="money-loading"><div class="spinner"></div><span>載入資料中…</span></div>
+          <canvas id="money-chart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- ────── PANEL B: 獲利與成本感測 ────── -->
+    <div class="tab-panel" id="panel-b">
+
+      <!-- CLI -->
+      <div class="section-label"><span class="icon">📈</span> OECD 領先指標 (CLI)</div>
+
+      <div class="info-panel" id="info-cli">
+        <div class="info-panel-header" onclick="toggleInfo('info-cli')">
+          <h3>ℹ️ CLI 領先指標說明</h3>
+          <span class="chevron">▼</span>
+        </div>
+        <div class="info-panel-body">
+          <div class="info-panel-content">
+            <strong>OECD CLI（Composite Leading Indicator）</strong>是 OECD 編制的綜合領先指標，用於預測經濟轉折點。
+            <ul>
+              <li><span class="highlight">CLI > 100</span>：經濟活動高於長期趨勢</li>
+              <li><span class="warn">CLI < 100</span>：經濟活動低於長期趨勢</li>
+              <li>CLI 從底部回升 → 預示經濟復甦</li>
+              <li>CLI 從高點下滑 → 預示景氣放緩</li>
+            </ul>
+            <strong>領先意義：</strong>CLI 通常領先 GDP 轉折 6-9 個月，是判斷套經濟週期位置的核心工具。美國 CLI 對全球股市指引性最強。
+            <br/><strong>資料來源：</strong>OECD / DBnomics / FRED
+          </div>
+        </div>
+      </div>
+
+      <div class="card-strip" id="cli-cards"></div>
+      <div class="legend-row" id="cli-legends"></div>
+
+      <div class="chart-section">
+        <div class="chart-header">
+          <div class="chart-title">五大經濟體 OECD CLI 領先指標</div>
+          <div class="chart-desc">正規化指數。100 以上表示高於趨勢，100 以下表示低於趨勢</div>
+          <div class="source-badges">
+            <span class="source-badge">OECD</span>
+            <span class="source-badge">DBnomics</span>
+          </div>
+        </div>
+        <div class="chart-wrapper">
+          <div class="chart-loading" id="cli-loading"><div class="spinner"></div><span>載入資料中…</span></div>
+          <canvas id="cli-chart"></canvas>
+        </div>
+      </div>
+
+      <!-- Semiconductor PPI -->
+      <div class="section-label"><span class="icon">📟</span> 半導體 PPI 指數</div>
+
+      <div class="info-panel" id="info-ppi">
+        <div class="info-panel-header" onclick="toggleInfo('info-ppi')">
+          <h3>ℹ️ 半導體 PPI 說明</h3>
+          <span class="chevron">▼</span>
+        </div>
+        <div class="info-panel-body">
+          <div class="info-panel-content">
+            <strong>半導體製造業 PPI（Producer Price Index）</strong>反映半導體產業出廠價格變動，是判斷科技業成本壓力與獲利空間的關鍵指標。
+            <ul>
+              <li>PPI 持續上行 → 半導體供不應求，代工廠有議價權</li>
+              <li>PPI 下行 → 供過於求，出清壓力增加</li>
+            </ul>
+            <strong>資料來源：</strong>FRED (PCU33443344) — U.S. BLS 半導體及電子零組件製造業 PPI (1984年12月=100)
+          </div>
+        </div>
+      </div>
+
+      <div class="chart-section">
+        <div class="chart-header">
+          <div class="chart-title">半導體製造業 PPI (Index Dec 1984=100)</div>
+          <div class="chart-desc">反映半導體產業價格趨勢與成本壓力</div>
+          <div class="source-badges"><span class="source-badge">FRED</span><span class="source-badge">BLS</span></div>
+        </div>
+        <div class="chart-wrapper">
+          <div class="chart-loading" id="semi-loading"><div class="spinner"></div><span>載入資料中…</span></div>
+          <canvas id="semi-chart"></canvas>
+        </div>
+      </div>
+
+      <!-- Brent Oil -->
+      <div class="section-label"><span class="icon">🛢️</span> 布蘭特原油價格</div>
+
+      <div class="info-panel" id="info-oil">
+        <div class="info-panel-header" onclick="toggleInfo('info-oil')">
+          <h3>ℹ️ 原油價格說明</h3>
+          <span class="chevron">▼</span>
+        </div>
+        <div class="info-panel-body">
+          <div class="info-panel-content">
+            <strong>布蘭特原油（Brent Crude）</strong>是全球原油定價基準，反映能源成本。
+            <ul>
+              <li>油價過高 → 侵蝕消費能力，迫使央行維持緊縮政策</li>
+              <li>油價暴跌 → 可能反映全球需求急凍（如衰退信號）</li>
+              <li>適度回升 → 反映需求復甦，有利景氣</li>
+            </ul>
+            <strong>資料來源：</strong>FRED (DCOILBRENTEU)
+          </div>
+        </div>
+      </div>
+
+      <div class="chart-section">
+        <div class="chart-header">
+          <div class="chart-title">布蘭特原油價格 (USD/barrel)</div>
+          <div class="chart-desc">能源成本指標</div>
+          <div class="source-badges"><span class="source-badge">FRED</span></div>
+        </div>
+        <div class="chart-wrapper">
+          <div class="chart-loading" id="oil-loading"><div class="spinner"></div><span>載入資料中…</span></div>
+          <canvas id="oil-chart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- ────── PANEL C: 流動性與風險感測 ────── -->
+    <div class="tab-panel" id="panel-c">
+
+      <!-- VIX -->
+      <div class="section-label"><span class="icon">🚨</span> VIX 波動率指數</div>
+
+      <div class="info-panel" id="info-vix">
+        <div class="info-panel-header" onclick="toggleInfo('info-vix')">
+          <h3>ℹ️ VIX 恐慌指數說明</h3>
+          <span class="chevron">▼</span>
+        </div>
+        <div class="info-panel-body">
+          <div class="info-panel-content">
+            <strong>VIX（CBOE Volatility Index）</strong>又稱「恐慌指數」，衡量市場對 S&P 500 未來 30 天波動程度的預期。
+            <ul>
+              <li><span class="highlight">VIX < 20</span>：市場處於低波動/正常狀態</li>
+              <li><span class="warn">VIX 20-30</span>：市場警戒，波動加大</li>
+              <li><span class="warn">VIX > 30</span>：市場恐慌，可能出現劇烈震盪</li>
+              <li><span class="warn">VIX > 40</span>：極度恐慌，歷史級別事件</li>
+            </ul>
+            <strong>投資策略：</strong>VIX 飆升時市場通常超賣，逢高買入波動率保險（如 VIX Call）可對沖風險。反向投資者關注 VIX 從高位回落作為進場信號。
+            <br/><strong>資料來源：</strong>FRED (VIXCLS)
+          </div>
+        </div>
+      </div>
+
+      <div class="metric-row" id="vix-metrics"></div>
+
+      <div class="chart-section">
+        <div class="chart-header">
+          <div class="chart-title">CBOE 波動率指數 (VIX)</div>
+          <div class="chart-desc">反映市場對未來 30 天波動的預期</div>
+          <div class="source-badges"><span class="source-badge">FRED</span><span class="source-badge">CBOE</span></div>
+        </div>
+        <div class="chart-wrapper">
+          <div class="chart-loading" id="vix-loading"><div class="spinner"></div><span>載入資料中…</span></div>
+          <canvas id="vix-chart"></canvas>
+        </div>
+      </div>
+
+      <!-- Yield Curve -->
+      <div class="section-label"><span class="icon">📉</span> 美國公債殖利率</div>
+
+      <div class="info-panel" id="info-yield">
+        <div class="info-panel-header" onclick="toggleInfo('info-yield')">
+          <h3>ℹ️ 殖利率曲線說明</h3>
+          <span class="chevron">▼</span>
+        </div>
+        <div class="info-panel-body">
+          <div class="info-panel-content">
+            <strong>殖利率曲線</strong>描繪不同天期美國公債的殖利率水準。
+            <ul>
+              <li><strong>正常（正斜率）：</strong>長期利率 > 短期利率，經濟預期健康</li>
+              <li><span class="warn">倒掛（負斜率）：</span>短期利率 > 長期利率，為<strong>衰退的強烈預兆</strong></li>
+              <li><strong>10Y-2Y 利差：</strong>最受關注的倒掛指標，歷史上曾預測每次美國衰退</li>
+            </ul>
+            <strong>目前焦點：</strong>10Y-2Y 利差從倒掛解除轉正後，通常是景氣末段或衰退即將開始的信號（歷史平均領先衰退 12-18 個月）。
+            <br/><strong>資料來源：</strong>FRED (DGS各天期)
+          </div>
+        </div>
+      </div>
+
+      <div class="chart-section">
+        <div class="chart-header">
+          <div class="chart-title">10Y-2Y 殖利率利差 (T10Y2Y)</div>
+          <div class="chart-desc">倒掛解除後轉正通常是衰退的強烈信號</div>
+          <div class="source-badges"><span class="source-badge">FRED</span></div>
+        </div>
+        <div class="chart-wrapper">
+          <div class="chart-loading" id="spread-loading"><div class="spinner"></div><span>載入資料中…</span></div>
+          <canvas id="spread-chart"></canvas>
+        </div>
+      </div>
+
+      <!-- Consumer Sentiment -->
+      <div class="section-label"><span class="icon">😊</span> 消費者信心指數</div>
+
+      <div class="info-panel" id="info-umcsent">
+        <div class="info-panel-header" onclick="toggleInfo('info-umcsent')">
+          <h3>ℹ️ 消費者信心說明</h3>
+          <span class="chevron">▼</span>
+        </div>
+        <div class="info-panel-body">
+          <div class="info-panel-content">
+            <strong>密西根大學消費者信心指數（UMich Consumer Sentiment）</strong>由密西根大學每月調查美國消費者對當前及未來經濟狀況的看法。
+            <ul>
+              <li>指數上升 → 消費者對經濟有信心，消費意願增強</li>
+              <li>指數下降 → 消費者轉趨悲觀，可能減少支出</li>
+              <li>基期：1966年 Q1 = 100</li>
+            </ul>
+            <strong>投資意義：</strong>消費佔美國 GDP 近 70%，消費者信心下降通常預示零售銷售與 GDP 增速放緩，是景氣轉弱的另一個先行信號。
+            <br/><strong>資料來源：</strong>FRED (UMCSENT)
+          </div>
+        </div>
+      </div>
+
+      <div class="chart-section">
+        <div class="chart-header">
+          <div class="chart-title">密西根大學消費者信心指數</div>
+          <div class="chart-desc">1966 Q1 = 100 基準</div>
+          <div class="source-badges"><span class="source-badge">FRED</span><span class="source-badge">UMich</span></div>
+        </div>
+        <div class="chart-wrapper">
+          <div class="chart-loading" id="umcsent-loading"><div class="spinner"></div><span>載入資料中…</span></div>
+          <canvas id="umcsent-chart"></canvas>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- ═══ FOOTER ═══ -->
+  <footer class="app-footer">
+    資料來源：
+    <a href="https://fred.stlouisfed.org">FRED</a> ·
+    <a href="https://db.nomics.world">DBnomics</a> ·
+    <a href="https://www.oecd.org">OECD</a>
+    <br/>本 App 資料僅供個人參考，請以官方發布為準。<br/>
+    v2.0.0 · GAI MEDashboard
+  </footer>
+
+  <!-- ═══ API KEY MODAL ═══ -->
+  <div class="modal-overlay" id="api-modal">
+    <div class="modal-sheet">
+      <h3>🔑 API Key 設定</h3>
+      <p>
+        設定 FRED API Key 可獲得更完整的即時數據。部分指標已有免費備用資料源，無 Key 亦可使用。<br/>
+        可至 <a href="https://fred.stlouisfed.org/docs/api/api_key.html" style="color:var(--accent)">fred.stlouisfed.org</a> 免費申請。
+      </p>
+      <input class="modal-input" id="fred-key-input" type="text" placeholder="貼上您的 FRED API Key…" autocomplete="off" />
+      <input class="modal-input" id="te-key-input" type="text" placeholder="Trading Economics Key (可選)" autocomplete="off" />
+      <div class="modal-actions">
+        <button class="btn-secondary" id="btn-modal-cancel">取消</button>
+        <button class="btn-primary" id="btn-modal-save">儲存並載入</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.1.0/dist/chartjs-plugin-annotation.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
