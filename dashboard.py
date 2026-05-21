@@ -14,6 +14,81 @@ st.set_page_config(page_title="全球經濟指標儀表板", layout="wide", page
 
 CACHE_TTL = 3600  # 1 hour
 
+# ── 13F 板塊分類對照表 ─────────────────────────────────────────────────────
+_SECTOR_MAP: dict[str, str] = {
+    # 科技
+    "MICROSOFT":     "科技",  "MSFT": "科技",
+    "APPLE":         "科技",  "AAPL": "科技",
+    "AMAZON":        "科技",  "AMZN": "科技",
+    "ALPHABET":      "科技",  "GOOGL": "科技", "GOOG": "科技",
+    "META":          "科技",  "META PLATFORMS": "科技",
+    "NETFLIX":       "科技",  "NFLX": "科技",
+    "SALESFORCE":    "科技",  "CRM": "科技",
+    "IBM":           "科技",
+    "SERVICENOW":    "科技",  "NOW": "科技",
+    # 半導體
+    "NVIDIA":        "半導體", "NVDA": "半導體",
+    "TAIWAN SEMI":   "半導體", "TSM": "半導體", "TSMC": "半導體",
+    "BROADCOM":      "半導體", "AVGO": "半導體",
+    "LAM RESEARCH":  "半導體", "LRCX": "半導體",
+    "APPLIED MATER": "半導體", "AMAT": "半導體",
+    "QUALCOMM":      "半導體", "QCOM": "半導體",
+    "AMD":           "半導體", "ADVANCED MICRO": "半導體",
+    "INTEL":         "半導體", "INTC": "半導體",
+    "MICRON":        "半導體", "MU": "半導體",
+    "TEXAS INST":    "半導體", "TXN": "半導體",
+    # 金融
+    "JPMORGAN":      "金融",  "JPM": "金融",
+    "GOLDMAN":       "金融",  "GS": "金融",
+    "BERKSHIRE":     "金融",  "BRK": "金融",
+    "BROOKFIELD":    "金融",  "BAM": "金融",
+    "VISA":          "金融",  "V": "金融",
+    "MASTERCARD":    "金融",  "MA": "金融",
+    "BANK OF AMER":  "金融",  "BAC": "金融",
+    "CITIGROUP":     "金融",  "C": "金融",
+    # 醫療
+    "ELI LILLY":     "醫療",  "LLY": "醫療",
+    "JOHNSON":       "醫療",  "JNJ": "醫療",
+    "UNITEDHEALTH":  "醫療",  "UNH": "醫療",
+    "ABBVIE":        "醫療",  "ABBV": "醫療",
+    "MERCK":         "醫療",  "MRK": "醫療",
+    # 消費
+    "WALMART":       "消費",  "WMT": "消費",
+    "COSTCO":        "消費",  "COST": "消費",
+    "AMAZON COM":    "消費",
+    "COUPANG":       "消費",  "CPNG": "消費",
+    "TESLA":         "消費",  "TSLA": "消費",
+    "HOME DEPOT":    "消費",  "HD": "消費",
+    "PROCTER":       "消費",  "PG": "消費",
+    "COCA-COLA":     "消費",  "KO": "消費",
+    "PEPSICO":       "消費",  "PEP": "消費",
+    # 能源/工業
+    "CHEVRON":       "能源",  "CVX": "能源",
+    "EXXON":         "能源",  "XOM": "能源",
+    "LINDE":         "工業",  "LIN": "工業",
+    "GE":            "工業",  "GENERAL ELECTRIC": "工業",
+    "CATERPILLAR":   "工業",  "CAT": "工業",
+}
+
+_SECTOR_COLOR: dict[str, str] = {
+    "科技":   "rgba(55,138,221,0.85)",
+    "半導體": "rgba(127,119,221,0.85)",
+    "金融":   "rgba(186,117,23,0.85)",
+    "醫療":   "rgba(99,153,34,0.85)",
+    "消費":   "rgba(212,83,126,0.85)",
+    "能源":   "rgba(186,101,29,0.85)",
+    "工業":   "rgba(136,135,128,0.85)",
+    "其他":   "rgba(100,100,100,0.6)",
+}
+
+def _classify_sector(display_name: str) -> str:
+    """模糊比對持倉名稱 → 板塊"""
+    name_upper = display_name.upper()
+    for keyword, sector in _SECTOR_MAP.items():
+        if keyword in name_upper:
+            return sector
+    return "其他"
+
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def load_data(fred_key):
@@ -1462,7 +1537,152 @@ with tab_d:
         st.metric("🤝 共識持股", f"{len(_cvb) + len(_cvs)} 檔")
 
     if _tbs or _tss or _tbv or _tsv or _cvb or _cvs:
-        _sub_s, _sub_v, _sub_c = st.tabs(["📊 股數排名", "💵 市值排名（USD）", "🤝 機構共識"])
+        _sub_rank, _sub_s, _sub_v, _sub_c = st.tabs([
+            "🏆 分類排名總覽", "📊 股數排名", "💵 市值排名（USD）", "🤝 機構共識"
+        ])
+
+        with _sub_rank:
+            st.markdown("### 🏆 分類排名總覽")
+            st.caption(
+                f"資料期間：{_quarter}　｜　追蹤基金：{_fund_count} 家　｜　"
+                "依淨增持市值排名，附板塊分類標籤"
+            )
+
+            # ── KPI 列 ──────────────────────────────────────────────────────────
+            _rk1, _rk2, _rk3, _rk4 = st.columns(4)
+            with _rk1:
+                st.metric("追蹤基金數", f"{_fund_count} 家")
+            with _rk2:
+                st.metric("淨增持標的", f"{len(_tbs)} 檔")
+            with _rk3:
+                st.metric("淨減持標的", f"{len(_tss)} 檔")
+            with _rk4:
+                st.metric("共識持股", f"{len(_cvb) + len(_cvs)} 檔")
+
+            st.markdown("---")
+
+            # ── 板塊篩選器 ──────────────────────────────────────────────────────
+            _all_sectors = list(_SECTOR_COLOR.keys())
+            _sel_sectors = st.multiselect(
+                "板塊篩選（空白 = 全部）",
+                options=_all_sectors,
+                default=[],
+                key="rank_sector_filter",
+            )
+
+            # ── 建立排名 DataFrame（依市值排名）────────────────────────────────
+            _rank_rows = []
+            for rank, (name, val_m, n_funds) in enumerate(_tbv, 1):
+                sector = _classify_sector(name)
+                _rank_rows.append({
+                    "排名": rank,
+                    "持倉名稱": name,
+                    "板塊": sector,
+                    "淨增持（$M）": val_m,
+                    "共識基金數": n_funds,
+                    "訊號": "🟢 買入" if val_m > 0 else "🔴 賣出",
+                })
+
+            _rank_df = pd.DataFrame(_rank_rows)
+
+            # 套用板塊篩選
+            if _sel_sectors:
+                _rank_df = _rank_df[_rank_df["板塊"].isin(_sel_sectors)]
+
+            # ── 橫向長條圖（市值排名）──────────────────────────────────────────
+            if not _rank_df.empty:
+                _colors = [_SECTOR_COLOR.get(s, _SECTOR_COLOR["其他"])
+                           for s in _rank_df["板塊"]]
+                _text_labels = [
+                    f"${v:,.0f}M | {s} | {f}家"
+                    for v, s, f in zip(
+                        _rank_df["淨增持（$M）"],
+                        _rank_df["板塊"],
+                        _rank_df["共識基金數"],
+                    )
+                ]
+
+                fig_rank = go.Figure(go.Bar(
+                    x=list(_rank_df["淨增持（$M）"]),
+                    y=list(_rank_df["持倉名稱"]),
+                    orientation='h',
+                    marker_color=_colors,
+                    text=_text_labels,
+                    textposition='outside',
+                    hovertemplate=(
+                        '<b>%{y}</b><br>'
+                        '淨增持：$%{x:,.0f}M<br>'
+                        '<extra></extra>'
+                    ),
+                ))
+                fig_rank.update_layout(
+                    title=f"Top {len(_rank_df)} 持倉 — 分類排名（{_quarter}）",
+                    xaxis_title="淨增持市值（$M USD）",
+                    yaxis_title="",
+                    margin=dict(t=55, b=20, l=175, r=130),
+                    height=max(400, len(_rank_df) * 28 + 80),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_rank, width='stretch', key='fig_rank_main')
+
+            # ── 板塊匯總（依板塊加總）──────────────────────────────────────────
+            st.markdown("#### 📊 板塊資金流向匯總")
+            _sector_summary = (
+                _rank_df.groupby("板塊")["淨增持（$M）"]
+                .sum()
+                .reset_index()
+                .sort_values("淨增持（$M）", ascending=False)
+            )
+            if not _sector_summary.empty:
+                _sc_colors = [_SECTOR_COLOR.get(s, _SECTOR_COLOR["其他"])
+                              for s in _sector_summary["板塊"]]
+                fig_sector = go.Figure(go.Bar(
+                    x=list(_sector_summary["板塊"]),
+                    y=list(_sector_summary["淨增持（$M）"]),
+                    marker_color=_sc_colors,
+                    text=[f"${v:,.0f}M" for v in _sector_summary["淨增持（$M）"]],
+                    textposition='outside',
+                    hovertemplate='%{x}<br>合計：$%{y:,.0f}M<extra></extra>',
+                ))
+                fig_sector.update_layout(
+                    title="板塊資金流量（各板塊淨增持加總）",
+                    xaxis_title="", yaxis_title="淨增持（$M）",
+                    margin=dict(t=55, b=20, l=40, r=20),
+                    height=320, showlegend=False,
+                )
+                st.plotly_chart(fig_sector, width='stretch', key='fig_rank_sector')
+
+            # ── 明細表格 ───────────────────────────────────────────────────────
+            st.markdown("#### 📋 持倉明細（可排序）")
+            if not _rank_df.empty:
+                max_val = float(_rank_df["淨增持（$M）"].abs().max()) if len(_rank_df) > 0 else 1000.0
+                st.dataframe(
+                    _rank_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "排名":        st.column_config.NumberColumn(width="small"),
+                        "持倉名稱":   st.column_config.TextColumn(width="medium"),
+                        "板塊":       st.column_config.TextColumn(width="small"),
+                        "淨增持（$M）": st.column_config.ProgressColumn(
+                            "淨增持（$M）",
+                            help="淨增持市值（百萬美元）",
+                            format="$%.1f M",
+                            min_value=0,
+                            max_value=max_val,
+                            width="medium"
+                        ),
+                        "共識基金數": st.column_config.ProgressColumn(
+                            "共識基金數",
+                            help="同向操作的機構數量",
+                            format="%d 家",
+                            min_value=0,
+                            max_value=20,
+                            width="small"
+                        ),
+                        "訊號":       st.column_config.TextColumn(width="small"),
+                    },
+                )
 
         # ── 股數排名 ─────────────────────────────────────────────────────────
         with _sub_s:
