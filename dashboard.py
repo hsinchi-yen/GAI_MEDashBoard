@@ -2331,68 +2331,107 @@ with tab_f:
                     "每日 02:30（台北時間）自動更新。"
                 )
 
-        # ──── F-3：成交值比重趨勢 ─────────────────────────────────────────────
+        # ──── F-3：動能排行（資金流向代理指標）────────────────────────────────
         with f_flow:
-            st.markdown("#### 各類股成交值佔大盤比重（近 60 交易日）")
-            st.caption("可識別資金從哪個類股流出、流入哪個類股。")
+            st.markdown("#### 類股動能排行（近 4 週報酬率）")
+            st.caption(
+                "台灣證交所目前未提供 JSON 格式的類股成交值 API，以「近 4 週價格動能」作為資金流向代理指標。"
+                "動能強的類股通常伴隨資金流入；動能弱的類股反之。"
+            )
 
-            if not turnover_df.empty:
-                # Top 8 類股（其餘合併為「其他」）
-                _top_sectors = (
-                    turnover_df.groupby("sector_name")["turnover_億"]
-                    .sum()
-                    .nlargest(8)
-                    .index.tolist()
-                )
-                _flow = turnover_df.copy()
-                _flow["sector_name"] = _flow["sector_name"].apply(
-                    lambda s: s if s in _top_sectors else "其他"
-                )
-                _flow_agg = (
-                    _flow.groupby(["date", "sector_name"])["turnover_share_pct"]
-                    .sum()
-                    .reset_index()
-                )
+            if not momentum_df.empty:
+                from fetchers.taiwan_sector import SECTOR_NAMES as _SN_F3
+                # 建立代碼反查字典：名稱 → 代碼
+                _name_to_code = {v: k for k, v in _SN_F3.items()}
 
-                fig_flow = px.area(
-                    _flow_agg,
-                    x="date",
-                    y="turnover_share_pct",
-                    color="sector_name",
-                    labels={
-                        "date": "日期",
-                        "turnover_share_pct": "成交值佔比 (%)",
-                        "sector_name": "類股",
+                _fdf = momentum_df.copy()
+                _fdf["產業大類"] = _fdf["sector_name"].map(_SECTOR_GROUP).fillna("其他")
+                _fdf["代碼"] = _fdf["sector_name"].map(_name_to_code).fillna("—")
+                _fdf["四象限"] = _fdf.apply(
+                    lambda r: (
+                        "🟢 強勢"   if r["ret_short_pct"] >= 0 and r["acceleration"] >= 0 else
+                        "🟡 退潮中" if r["ret_short_pct"] >= 0 and r["acceleration"] <  0 else
+                        "🔵 升溫中" if r["ret_short_pct"] <  0 and r["acceleration"] >= 0 else
+                        "🔴 弱勢"
+                    ), axis=1
+                )
+                _fdf_sorted = _fdf.sort_values("ret_short_pct", ascending=True)
+
+                # 橫向條形圖：近 4 週報酬率，按產業大類著色
+                _group_colors = {
+                    "科技": "#42a5f5", "金融": "#66bb6a", "工業": "#ffa726",
+                    "消費": "#ef5350", "原物料": "#ab47bc", "能源": "#26c6da", "其他": "#78909c",
+                }
+                fig_flow = px.bar(
+                    _fdf_sorted,
+                    x="ret_short_pct",
+                    y="sector_name",
+                    color="產業大類",
+                    color_discrete_map=_group_colors,
+                    orientation="h",
+                    hover_data={
+                        "代碼": True,
+                        "ret_long_pct": ":.2f",
+                        "acceleration": ":.2f",
+                        "四象限": True,
+                        "ret_short_pct": ":.2f",
+                        "產業大類": False,
                     },
-                    height=420,
+                    labels={
+                        "ret_short_pct": "近 4 週報酬率 (%)",
+                        "sector_name":   "類股",
+                        "ret_long_pct":  "近 12 週報酬率 (%)",
+                        "acceleration":  "加速度 (%)",
+                    },
+                    height=560,
                 )
+                fig_flow.add_vline(x=0, line_dash="dash", line_color="rgba(255,255,255,0.4)")
                 fig_flow.update_layout(
                     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(15,15,20,1)",
                     font_color="#ddd",
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                    margin=dict(l=40, r=20, t=30, b=40),
-                    hovermode="x unified",
+                    legend=dict(title="產業大類", orientation="v", x=1.01, y=1),
+                    margin=dict(l=10, r=160, t=30, b=40),
+                    xaxis=dict(zeroline=False, gridcolor="rgba(255,255,255,0.08)"),
+                    yaxis=dict(gridcolor="rgba(0,0,0,0)"),
                 )
                 st.plotly_chart(fig_flow, width='stretch', key="fig_f_flow")
 
-                # 最新一日排行
-                _latest_date = turnover_df["date"].max()
-                _latest = (
-                    turnover_df[turnover_df["date"] == _latest_date]
-                    .sort_values("turnover_share_pct", ascending=False)
-                    [["sector_name", "turnover_億", "turnover_share_pct"]]
+                # 整合速查表：代碼 + 名稱 + 產業 + 動能數據
+                st.markdown("#### 19 類股動能速查表")
+                st.caption("含 TWSE 官方代碼、產業大類、近期動能指標與象限判斷，可作為查詢參考。")
+                _table = (
+                    _fdf[["代碼", "sector_name", "產業大類", "ret_short_pct",
+                           "ret_long_pct", "acceleration", "四象限"]]
+                    .sort_values(
+                        by=["產業大類", "ret_short_pct"],
+                        key=lambda col: col.map(_GROUP_ORDER) if col.name == "產業大類"
+                                        else col,
+                        ascending=[True, False],
+                    )
                     .rename(columns={
-                        "sector_name": "類股",
-                        "turnover_億": "成交額(億)",
-                        "turnover_share_pct": "佔比(%)",
+                        "sector_name":   "類股名稱",
+                        "ret_short_pct": "近4週報酬(%)",
+                        "ret_long_pct":  "近12週報酬(%)",
+                        "acceleration":  "加速度(%)",
                     })
                     .reset_index(drop=True)
                 )
-                st.markdown(f"**最新交易日（{_latest_date.strftime('%Y-%m-%d')}）類股成交排行**")
-                st.dataframe(_latest, width='stretch', height=360)
+                st.dataframe(
+                    _table.style.background_gradient(
+                        subset=["近4週報酬(%)", "近12週報酬(%)"],
+                        cmap="RdYlGn",
+                    ).format({
+                        "近4週報酬(%)":  "{:.2f}",
+                        "近12週報酬(%)": "{:.2f}",
+                        "加速度(%)":     "{:.2f}",
+                    }),
+                    hide_index=True,
+                    width='stretch',
+                    height=560,
+                )
             else:
                 st.info(
-                    "成交值資料載入中，請稍後重整頁面。\n\n"
+                    "類股動能資料載入中，請稍後重整頁面。\n\n"
                     "首次啟動請執行：`docker exec macro-dashboard python scheduler.py --run-now`"
                 )
 
