@@ -6,13 +6,17 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import data_fetcher as dfetch
+import db_manager
 from macro_index import build_macro_index_history, compute_macro_index, get_regime_color, REGIME_LABELS
 from streamlit_javascript import st_javascript
 
 # MUST BE FIRST
 st.set_page_config(page_title="全球經濟指標儀表板", layout="wide", page_icon="📊")
 
-CACHE_TTL = 3600  # 1 hour
+# UI session cache for DB-backed loaders: matches nightly scheduler frequency.
+# load_data() (live-fetch fallback) keeps this as its own TTL.
+CACHE_TTL    = 3600       # 1 h — live-fetch fallback only
+CACHE_TTL_DB = 86400      # 24 h — DB-backed loaders (data changes once per day)
 
 # ── 13F 板塊分類對照表 ─────────────────────────────────────────────────────
 _SECTOR_MAP: dict[str, str] = {
@@ -192,10 +196,137 @@ def load_data(fred_key):
     return data
 
 
-@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+@st.cache_data(ttl=CACHE_TTL_DB, show_spinner=False)
+def load_all_from_db(fred_key: str) -> dict:
+    """
+    Load all macro indicators from SQLite (15-year history).
+
+    Reads directly from DB — no network calls during UI interaction.
+    Year-range filtering is done by filt() after this returns, so
+    switching the sidebar selector costs zero fetch time.
+
+    Falls back to load_data(fred_key) if the DB has no entries at all
+    (e.g. first launch before scheduler has run).
+    """
+    if not db_manager.list_keys():
+        return load_data(fred_key)
+
+    R = db_manager.read  # shorthand
+
+    data: dict = {}
+
+    # ── VIX ───────────────────────────────────────────────────────────────────
+    data['VIX'] = R('vix')
+
+    # ── Panel A: demand ───────────────────────────────────────────────────────
+    data['US_PMI']  = R('ism_pmi')
+    data['TW_PMI']  = R('taiwan_pmi')
+    data['CN_PMI']  = R('china_nbs_pmi')
+    data['JP_PMI']  = R('japan_watchers')
+    data['EU_PMI']  = R('eurostat_ici')
+
+    _retail = R('us_retail')
+    data['US_RETAIL']     = _retail
+    data['US_RETAIL_YOY'] = (dfetch.compute_yoy(_retail)
+                             if _retail is not None and not _retail.empty
+                             else pd.DataFrame())
+    data['UMCSENT']    = R('umcsent')
+
+    _tw_exp = R('taiwan_exports')
+    data['TW_EXP_AMOUNT'] = _tw_exp
+    data['TW_EXP_YOY']    = (dfetch.compute_yoy(_tw_exp)
+                              if _tw_exp is not None and not _tw_exp.empty
+                              else pd.DataFrame())
+    data['KR_EXP_YOY']    = R('korea_exports_yoy')
+    data['NDC_LEADING']   = R('ndc_leading')
+
+    # ── Panel B: cost / profit ────────────────────────────────────────────────
+    data['US_CLI'] = R('cli_us')
+    data['CN_CLI'] = R('cli_cn')
+    data['JP_CLI'] = R('cli_jp')
+    data['EU_CLI'] = R('cli_eu')
+    data['KR_CLI'] = R('cli_kr')
+
+    data['US_BUSINV']        = R('us_businv')
+    data['SEMI_PPI']         = R('semi_ppi')
+    data['COPPER_YOY']       = R('copper_yoy')
+    data['TSMC_REVENUE_YOY'] = R('tsmc_revenue_yoy')
+
+    _nom = R('dgs10')
+    _bei = R('t10y_bei')
+    data['US_10Y_NOMINAL'] = _nom
+    data['US_10Y_BEI']     = _bei
+    if (_nom is not None and not _nom.empty and
+            _bei is not None and not _bei.empty):
+        _m = _nom.merge(_bei, on='date', suffixes=('_nom', '_bei'))
+        _m['value'] = _m['value_nom'] - _m['value_bei']
+        data['US_REAL_RATE'] = _m[['date', 'value']]
+    else:
+        data['US_REAL_RATE'] = pd.DataFrame()
+
+    _ccpi = R('us_core_cpi')
+    _cppi = R('us_core_ppi')
+    data['US_CORE_CPI_YOY'] = (dfetch.compute_yoy(_ccpi)
+                                if _ccpi is not None and not _ccpi.empty
+                                else pd.DataFrame())
+    data['US_CORE_PPI_YOY'] = (dfetch.compute_yoy(_cppi)
+                                if _cppi is not None and not _cppi.empty
+                                else pd.DataFrame())
+    _cy, _py = data['US_CORE_CPI_YOY'], data['US_CORE_PPI_YOY']
+    if not _cy.empty and not _py.empty:
+        _sc = _cy.merge(_py, on='date', suffixes=('_cpi', '_ppi'))
+        _sc['value'] = _sc['value_cpi'] - _sc['value_ppi']
+        data['CPI_PPI_SCISSORS'] = _sc[['date', 'value']]
+    else:
+        data['CPI_PPI_SCISSORS'] = pd.DataFrame()
+
+    data['CN_PPI_YOY']          = R('china_ppi_yoy')
+    data['BRENT']               = R('brent')
+    data['CHINA_CREDIT_IMPULSE'] = R('china_credit')
+
+    # ── Panel C: liquidity / risk ─────────────────────────────────────────────
+    data['TW_M1B_YOY'] = R('cbc_money_supply.m1b_yoy')
+    data['TW_M2_YOY']  = R('cbc_money_supply.m2_yoy')
+    _us_m1 = R('us_m1')
+    data['US_M1_YOY']  = (dfetch.compute_yoy(_us_m1)
+                          if _us_m1 is not None and not _us_m1.empty
+                          else pd.DataFrame())
+
+    yield_mats = {
+        '1M': 'yield_1M', '3M': 'yield_3M', '6M': 'yield_6M',
+        '1Y': 'yield_1Y', '2Y': 'yield_2Y', '3Y': 'yield_3Y',
+        '5Y': 'yield_5Y', '7Y': 'yield_7Y', '10Y': 'yield_10Y',
+        '20Y': 'yield_20Y', '30Y': 'yield_30Y',
+    }
+    data['YIELD_CURVE'] = {lbl: R(db_key) for lbl, db_key in yield_mats.items()}
+    data['T10Y2Y']    = R('t10y2y')
+    data['HY_SPREAD'] = R('hy_spread')
+    data['TWD_USD']   = R('twd_usd')
+    data['DXY']       = R('dxy')
+
+    # ── Panel D: equities ─────────────────────────────────────────────────────
+    data['SP500_YOY']         = R('sp500_yoy')
+    data['TAIEX_YOY']         = R('taiex_yoy')
+    data['NIKKEI_YOY']        = R('nikkei_yoy')
+    data['KOSPI_YOY']         = R('kospi_yoy')
+    data['HSI_YOY']           = R('hsi_yoy')
+    data['CSI300_YOY']        = R('csi300_yoy')
+    data['VKOSPI']            = R('vkospi')
+    data['FED_FUNDS']         = R('fed_funds_rate')
+    data['T10Y3M']            = R('t10y3m')
+    data['US_NEW_ORDERS_YOY'] = R('us_new_orders_yoy')
+
+    # ── Panel E: sector rotation (ETF-based) ──────────────────────────────────
+    data['SECTOR_ROTATION']   = R('sector_rotation')
+    data['THIRTEENF_NET_ADD'] = R('13f_proxy')
+
+    return data
+
+
+@st.cache_data(ttl=CACHE_TTL_DB, show_spinner=False)
 def load_gmi_history(fred_key: str) -> pd.DataFrame:
-    """單獨快取的 GMI 歷史時間軸（10 年月頻重算）。"""
-    data = load_data(fred_key)
+    """GMI 歷史時間軸（10 年月頻）— 24h session cache，配合每日排程器。"""
+    data = load_all_from_db(fred_key)
     return build_macro_index_history(data, lookback_years=10)
 
 
@@ -203,6 +334,57 @@ def load_gmi_history(fred_key: str) -> pd.DataFrame:
 def load_13f_data() -> dict:
     """SEC EDGAR 13F 機構持倉 — 每日快取（24h TTL）；首次載入約 20-30 秒。"""
     return dfetch.fetch_13f_smart_money(n_top=20)
+
+
+@st.cache_data(ttl=3600 * 2, show_spinner=False)
+def load_tw_institutional(n_days: int = 5) -> dict:
+    """台灣三大法人買賣超排行 — 每 2 小時快取；首次載入約 10-30 秒。"""
+    return dfetch.fetch_tw_institutional(n_days)
+
+
+@st.cache_data(ttl=CACHE_TTL_DB, show_spinner=False)
+def load_tw_sector_data() -> dict:
+    """台股類股輪動資料 — 優先讀 DB（scheduler 02:30 更新），fallback 至 live fetch。"""
+    from fetchers.taiwan_sector import (
+        fetch_tw_sector_indices,
+        fetch_tw_sector_turnover,
+        fetch_tw_sector_institutional,
+        calc_sector_momentum,
+        detect_rotation_signal,
+    )
+
+    # ── DB-first: read grouped ts written by scheduler ────────────────────────
+    close_raw = db_manager.read("tw_sector_close")
+    if close_raw is not None and not close_raw.empty:
+        sector_df = close_raw.rename(columns={"series_key": "sector_name", "value": "close"})
+        chg_raw = db_manager.read("tw_sector_chg_pct")
+        if chg_raw is not None and not chg_raw.empty:
+            chg_df = chg_raw.rename(columns={"series_key": "sector_name", "value": "chg_pct"})
+            sector_df = sector_df.merge(chg_df, on=["date", "sector_name"], how="left")
+    else:
+        # Fallback: live fetch (first run before scheduler populates DB).
+        # 70 days covers the 60-day minimum for momentum calc with a small buffer.
+        sector_df = fetch_tw_sector_indices(n_days=70)
+
+    # ── turnover: blob_cache (60-day snapshot) ────────────────────────────────
+    turnover_df = db_manager.read("tw_sector_turnover")
+    if turnover_df is None or turnover_df.empty:
+        turnover_df = fetch_tw_sector_turnover(n_days=60)
+
+    # ── institutional net buy/sell by sector (5-day snapshot) ─────────────────
+    instit_df = db_manager.read("tw_sector_institutional")
+    if instit_df is None or instit_df.empty:
+        instit_df = fetch_tw_sector_institutional(n_days=5)
+
+    momentum_df = calc_sector_momentum(sector_df) if not sector_df.empty else pd.DataFrame()
+    signals     = detect_rotation_signal(momentum_df) if not momentum_df.empty else {}
+    return {
+        "sector_df":   sector_df,
+        "turnover_df": turnover_df,
+        "instit_df":   instit_df,
+        "momentum_df": momentum_df,
+        "signals":     signals,
+    }
 
 
 def build_figure(title, data_dict, y_label="Value", is_yoy=False):
@@ -296,22 +478,22 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("🗓️ 圖表時間區間")
-    st.caption("資料一次拉取 12 年，切換年份不需重新下載。")
+    st.caption("資料庫存有最近 15 年歷史，切換年份直接從 DB 讀取，不重新抓取。")
     range_years = st.selectbox(
         "選擇呈現範圍",
-        list(range(1, 11)),
-        index=2,
+        [3, 5, 7, 10, 15],
+        index=1,
         format_func=lambda x: f"近 {x} 年",
     )
     st.markdown("---")
 
 st.title("📊 全球經濟指標動態看板")
 st.markdown(
-    "資料來源：ISM · CIER · NBS · 內閣府 · Eurostat · FRED · DBnomics · 財政部 · 央行 · Yahoo Finance　｜　**自動快取 1 小時更新**"
+    "資料來源：ISM · CIER · NBS · 內閣府 · Eurostat · FRED · DBnomics · 財政部 · 央行 · Yahoo Finance　｜　**資料庫每日自動更新，最多 15 年歷史**"
 )
 
-with st.spinner('背景提取最新指標數據中，請稍候…'):
-    data = load_data(fred_api_key)
+with st.spinner('從資料庫載入指標數據中…'):
+    data = load_all_from_db(fred_api_key)
 
 cutoff = pd.Timestamp(datetime.now() - relativedelta(years=range_years))
 
@@ -364,7 +546,7 @@ st.markdown(
     f'&nbsp;&nbsp;GMI <b>{gmi["score"]}/20</b>&nbsp; 擴散 <b>{gmi["diffusion"]:.1f}%</b>'
     f'&nbsp;&nbsp;<span style="opacity:0.4">|</span>&nbsp;&nbsp;'
     f'<span style="font-size:0.85em;">{"　".join(_bparts)}</span>'
-    f'&nbsp;&nbsp;<span style="font-size:0.75em; opacity:0.55; float:right;">1h 快取</span>'
+    f'&nbsp;&nbsp;<span style="font-size:0.75em; opacity:0.55; float:right;">DB · 每日更新</span>'
     f'</div>',
     unsafe_allow_html=True,
 )
@@ -394,8 +576,8 @@ with st.sidebar:
 # ════════════════════════════════════════════════════════
 # 主分頁 Tab 導航
 # ════════════════════════════════════════════════════════
-tab_ov, tab_a, tab_b, tab_c, tab_d, tab_e = st.tabs([
-    "📋 Overview", "A 需求感測", "B 成本/獲利", "C 流動性/風險", "D 股市比對", "E 總經指數"
+tab_ov, tab_a, tab_b, tab_c, tab_d, tab_e, tab_f = st.tabs([
+    "📋 Overview", "A 需求感測", "B 成本/獲利", "C 流動性/風險", "D 股市比對", "E 總經指數", "F 資金輪動"
 ])
 
 
@@ -1492,405 +1674,110 @@ with tab_d:
     else:
         st.warning("VIX 資料無法載入。")
 
-    # ── 13F 機構持倉 — Smart Money 動態（Phase 2）──────────────────────────────
+    # ── 台灣三大法人買賣超排行 ─────────────────────────────────────────────────
     st.markdown("---")
-    st.subheader("🏦 13F 機構持倉 — Smart Money 動態")
+    st.subheader("🇹🇼 台灣三大法人買賣超排行")
     st.caption(
-        "整合 SEC EDGAR 13F-HR / 13F-HR/A：Berkshire、Citadel、Two Sigma 等 20 大機構。"
-        "以 CUSIP 為主鍵去重；13F-HR/A 修訂版優先。三個維度排名：股數 / 市值 / 機構共識。"
-        "首次載入約 20-30 秒，之後 24 小時快取。"
+        "資料來源：台灣證券交易所 T86 — 外資＋投信＋自營商合計淨買賣超股數。"
+        "首次載入約 10-30 秒（每 2 小時快取）。"
     )
 
-    _13f_hd, _13f_bt = st.columns([3, 1])
-    with _13f_hd:
-        st.markdown(
-            "📌 **方法**：CUSIP 主鍵去重 → 各機構當季 vs 上季持股差值 → 20 大機構加總。"
-            "僅計 SOLE / DFND 自主裁量持股，避免選擇性持股雙重計算。"
+    _tw_ctrl_col, _tw_refresh_col = st.columns([4, 1])
+    with _tw_ctrl_col:
+        _tw_period = st.radio(
+            "統計期間",
+            ["近一週（5 個交易日）", "近一月（20 個交易日）"],
+            horizontal=True,
+            key="tw_inst_period",
+            label_visibility="collapsed",
         )
-    with _13f_bt:
-        if st.button("🔄 更新 13F", key='btn_13f_refresh',
-                     help="清除快取並重新抓取 EDGAR（約 20-30 秒）"):
-            load_13f_data.clear()
+    with _tw_refresh_col:
+        if st.button("🔄 更新法人資料", key="btn_tw_inst_refresh",
+                     help="清除快取並重新從 TWSE 抓取（約 10-30 秒）"):
+            load_tw_institutional.clear()
             st.rerun()
 
-    with st.spinner("從 SEC EDGAR 抓取 13F 持倉中（每日快取 24h）…"):
-        _smart = load_13f_data()
+    _tw_n_days = 5 if "一週" in _tw_period else 20
 
-    _quarter    = _smart.get("quarter", "N/A")
-    _fund_count = _smart.get("fund_count", 0)
-    _tbs  = _smart.get("top_buy_shares",  [])
-    _tss  = _smart.get("top_sell_shares", [])
-    _tbv  = _smart.get("top_buy_value",   [])
-    _tsv  = _smart.get("top_sell_value",  [])
-    _cvb  = _smart.get("conviction_buy",  [])
-    _cvs  = _smart.get("conviction_sell", [])
+    with st.spinner("從台灣證交所 T86 抓取三大法人買賣超資料中…"):
+        _tw_data = load_tw_institutional(_tw_n_days)
 
-    _mc1, _mc2, _mc3, _mc4 = st.columns(4)
-    with _mc1:
-        st.metric("📅 最新季度", _quarter)
-    with _mc2:
-        st.metric("🏛️ 機構覆蓋", f"{_fund_count} / 20")
-    with _mc3:
-        _tracked = len(set(n for n, *_ in _tbs) | set(n for n, *_ in _tss))
-        st.metric("📋 追蹤標的", f"{_tracked} 檔")
-    with _mc4:
-        st.metric("🤝 共識持股", f"{len(_cvb) + len(_cvs)} 檔")
+    _tw_buy         = _tw_data.get("top30_buy",    pd.DataFrame())
+    _tw_sell        = _tw_data.get("top30_sell",   pd.DataFrame())
+    _tw_period_lbl  = _tw_data.get("period_label", "")
+    _tw_fetch_date  = _tw_data.get("fetch_date",   "")
 
-    if _tbs or _tss or _tbv or _tsv or _cvb or _cvs:
-        _sub_rank, _sub_s, _sub_v, _sub_c = st.tabs([
-            "🏆 分類排名總覽", "📊 股數排名", "💵 市值排名（USD）", "🤝 機構共識"
-        ])
+    st.caption(f"統計期間：{_tw_period_lbl}　｜　資料擷取：{_tw_fetch_date}")
 
-        with _sub_rank:
-            st.markdown("### 🏆 分類排名總覽")
-            st.caption(
-                f"資料期間：{_quarter}　｜　追蹤基金：{_fund_count} 家　｜　"
-                "依淨增持市值排名，附板塊分類標籤"
+    if not _tw_buy.empty or not _tw_sell.empty:
+        # ── Top 10 橫向長條圖 ──
+        _tw_bar_col1, _tw_bar_col2 = st.columns(2)
+
+        def _tw_bar(df, title, color):
+            top10 = df.head(10).copy()
+            top10["label"] = top10["code"] + "  " + top10["name"]
+            top10["萬股"] = (top10["net_shares"] / 10000).round(1)
+            fig = go.Figure(go.Bar(
+                y=top10["label"].iloc[::-1],
+                x=top10["萬股"].iloc[::-1],
+                orientation="h",
+                marker_color=color,
+                text=[f"{v:,.1f}" for v in top10["萬股"].iloc[::-1]],
+                textposition="outside",
+                hovertemplate="%{y}<br>%{x:,.1f} 萬股<extra></extra>",
+            ))
+            fig.update_layout(
+                title=title,
+                xaxis_title="萬股",
+                margin=dict(t=45, b=20, l=140, r=70),
+                height=330,
+                xaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.08)"),
             )
+            return fig
 
-            # ── KPI 列 ──────────────────────────────────────────────────────────
-            _rk1, _rk2, _rk3, _rk4 = st.columns(4)
-            with _rk1:
-                st.metric("追蹤基金數", f"{_fund_count} 家")
-            with _rk2:
-                st.metric("淨增持標的", f"{len(_tbs)} 檔")
-            with _rk3:
-                st.metric("淨減持標的", f"{len(_tss)} 檔")
-            with _rk4:
-                st.metric("共識持股", f"{len(_cvb) + len(_cvs)} 檔")
-
-            st.markdown("---")
-
-            # ── 板塊篩選器 ──────────────────────────────────────────────────────
-            _all_sectors = list(_SECTOR_COLOR.keys())
-            _sel_sectors = st.multiselect(
-                "板塊篩選（空白 = 全部）",
-                options=_all_sectors,
-                default=[],
-                key="rank_sector_filter",
-            )
-
-            # ── 建立排名 DataFrame（依市值排名）────────────────────────────────
-            _rank_rows = []
-            for rank, (name, val_m, n_funds) in enumerate(_tbv, 1):
-                sector = _classify_sector(name)
-                _rank_rows.append({
-                    "排名": rank,
-                    "持倉名稱": name,
-                    "板塊": sector,
-                    "淨增持（$M）": val_m,
-                    "共識基金數": n_funds,
-                    "訊號": "🟢 買入" if val_m > 0 else "🔴 賣出",
-                })
-
-            _rank_df = pd.DataFrame(_rank_rows)
-
-            # 套用板塊篩選
-            if _sel_sectors:
-                _rank_df = _rank_df[_rank_df["板塊"].isin(_sel_sectors)]
-
-            # ── 橫向長條圖（市值排名）──────────────────────────────────────────
-            if not _rank_df.empty:
-                _colors = [_SECTOR_COLOR.get(s, _SECTOR_COLOR["其他"])
-                           for s in _rank_df["板塊"]]
-                _text_labels = [
-                    f"${v:,.0f}M | {s} | {f}家"
-                    for v, s, f in zip(
-                        _rank_df["淨增持（$M）"],
-                        _rank_df["板塊"],
-                        _rank_df["共識基金數"],
-                    )
-                ]
-
-                fig_rank = go.Figure(go.Bar(
-                    x=list(_rank_df["淨增持（$M）"]),
-                    y=list(_rank_df["持倉名稱"]),
-                    orientation='h',
-                    marker_color=_colors,
-                    text=_text_labels,
-                    textposition='outside',
-                    hovertemplate=(
-                        '<b>%{y}</b><br>'
-                        '淨增持：$%{x:,.0f}M<br>'
-                        '<extra></extra>'
-                    ),
-                ))
-                fig_rank.update_layout(
-                    title=f"Top {len(_rank_df)} 持倉 — 分類排名（{_quarter}）",
-                    xaxis_title="淨增持市值（$M USD）",
-                    yaxis_title="",
-                    margin=dict(t=55, b=20, l=175, r=130),
-                    height=max(400, len(_rank_df) * 28 + 80),
-                    showlegend=False,
+        with _tw_bar_col1:
+            if not _tw_buy.empty:
+                st.plotly_chart(
+                    _tw_bar(_tw_buy, "📈 三大法人 Top 10 買超", "rgba(38,166,91,0.82)"),
+                    use_container_width=True, key="fig_tw_buy10",
                 )
-                st.plotly_chart(fig_rank, width='stretch', key='fig_rank_main')
-
-            # ── 板塊匯總（依板塊加總）──────────────────────────────────────────
-            st.markdown("#### 📊 板塊資金流向匯總")
-            _sector_summary = (
-                _rank_df.groupby("板塊")["淨增持（$M）"]
-                .sum()
-                .reset_index()
-                .sort_values("淨增持（$M）", ascending=False)
-            )
-            if not _sector_summary.empty:
-                _sc_colors = [_SECTOR_COLOR.get(s, _SECTOR_COLOR["其他"])
-                              for s in _sector_summary["板塊"]]
-                fig_sector = go.Figure(go.Bar(
-                    x=list(_sector_summary["板塊"]),
-                    y=list(_sector_summary["淨增持（$M）"]),
-                    marker_color=_sc_colors,
-                    text=[f"${v:,.0f}M" for v in _sector_summary["淨增持（$M）"]],
-                    textposition='outside',
-                    hovertemplate='%{x}<br>合計：$%{y:,.0f}M<extra></extra>',
-                ))
-                fig_sector.update_layout(
-                    title="板塊資金流量（各板塊淨增持加總）",
-                    xaxis_title="", yaxis_title="淨增持（$M）",
-                    margin=dict(t=55, b=20, l=40, r=20),
-                    height=320, showlegend=False,
-                )
-                st.plotly_chart(fig_sector, width='stretch', key='fig_rank_sector')
-
-            # ── 明細表格 ───────────────────────────────────────────────────────
-            st.markdown("#### 📋 持倉明細（可排序）")
-            if not _rank_df.empty:
-                max_val = float(_rank_df["淨增持（$M）"].abs().max()) if len(_rank_df) > 0 else 1000.0
-                st.dataframe(
-                    _rank_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "排名":        st.column_config.NumberColumn(width="small"),
-                        "持倉名稱":   st.column_config.TextColumn(width="medium"),
-                        "板塊":       st.column_config.TextColumn(width="small"),
-                        "淨增持（$M）": st.column_config.ProgressColumn(
-                            "淨增持（$M）",
-                            help="淨增持市值（百萬美元）",
-                            format="$%.1f M",
-                            min_value=0,
-                            max_value=max_val,
-                            width="medium"
-                        ),
-                        "共識基金數": st.column_config.ProgressColumn(
-                            "共識基金數",
-                            help="同向操作的機構數量",
-                            format="%d 家",
-                            min_value=0,
-                            max_value=20,
-                            width="small"
-                        ),
-                        "訊號":       st.column_config.TextColumn(width="small"),
-                    },
+        with _tw_bar_col2:
+            if not _tw_sell.empty:
+                st.plotly_chart(
+                    _tw_bar(_tw_sell, "📉 三大法人 Top 10 賣超", "rgba(234,57,67,0.82)"),
+                    use_container_width=True, key="fig_tw_sell10",
                 )
 
-        # ── 股數排名 ─────────────────────────────────────────────────────────
-        with _sub_s:
-            _sb_col, _ss_col = st.columns(2)
-            with _sb_col:
-                st.markdown("### 🟢 Top 20 淨增持（股數）")
-                if _tbs:
-                    _nb = [n for n, v, f in reversed(_tbs)]
-                    _xb = [v // 1_000 for n, v, f in reversed(_tbs)]
-                    _fb = [f for n, v, f in reversed(_tbs)]
-                    fig_s_buy = go.Figure(go.Bar(
-                        x=_xb, y=_nb, orientation='h',
-                        marker_color='rgba(38,166,91,0.85)',
-                        text=[f"{x:,}K ({f}家)" for x, f in zip(_xb, _fb)],
-                        textposition='outside',
-                        hovertemplate='%{y}<br>淨增持: %{x:,}K股<extra></extra>',
-                    ))
-                    fig_s_buy.update_layout(
-                        title=f'Top 20 淨增持 — 股數（{_quarter}）',
-                        xaxis_title='股數（千股）', yaxis_title='',
-                        margin=dict(t=50, b=20, l=165, r=90),
-                        height=540, showlegend=False,
-                    )
-                    st.plotly_chart(fig_s_buy, width='stretch', key='fig_13f_s_buy')
-                else:
-                    st.info("無買入數據。")
-            with _ss_col:
-                st.markdown("### 🔴 Top 20 淨減持（股數）")
-                if _tss:
-                    _ns = [n for n, v, f in reversed(_tss)]
-                    _xs = [abs(v) // 1_000 for n, v, f in reversed(_tss)]
-                    _fs = [f for n, v, f in reversed(_tss)]
-                    fig_s_sell = go.Figure(go.Bar(
-                        x=_xs, y=_ns, orientation='h',
-                        marker_color='rgba(234,57,67,0.85)',
-                        text=[f"{x:,}K ({f}家)" for x, f in zip(_xs, _fs)],
-                        textposition='outside',
-                        hovertemplate='%{y}<br>淨減持: %{x:,}K股<extra></extra>',
-                    ))
-                    fig_s_sell.update_layout(
-                        title=f'Top 20 淨減持 — 股數（{_quarter}）',
-                        xaxis_title='股數（千股）', yaxis_title='',
-                        margin=dict(t=50, b=20, l=165, r=90),
-                        height=540, showlegend=False,
-                    )
-                    st.plotly_chart(fig_s_sell, width='stretch', key='fig_13f_s_sell')
-                else:
-                    st.info("無賣出數據。")
-
-        # ── 市值排名 ─────────────────────────────────────────────────────────
-        with _sub_v:
-            _vb_col, _vs_col = st.columns(2)
-            with _vb_col:
-                st.markdown("### 🟢 Top 20 淨增持（市值 $M）")
-                if _tbv:
-                    _nvb = [n for n, v, f in reversed(_tbv)]
-                    _xvb = [v for n, v, f in reversed(_tbv)]
-                    _fvb = [f for n, v, f in reversed(_tbv)]
-                    fig_v_buy = go.Figure(go.Bar(
-                        x=_xvb, y=_nvb, orientation='h',
-                        marker_color='rgba(38,166,91,0.85)',
-                        text=[f"${x:,.0f}M ({f}家)" for x, f in zip(_xvb, _fvb)],
-                        textposition='outside',
-                        hovertemplate='%{y}<br>淨增持: $%{x:,.0f}M<extra></extra>',
-                    ))
-                    fig_v_buy.update_layout(
-                        title=f'Top 20 淨增持 — 市值（{_quarter}）',
-                        xaxis_title='市值變化（$M USD）', yaxis_title='',
-                        margin=dict(t=50, b=20, l=165, r=100),
-                        height=540, showlegend=False,
-                    )
-                    st.plotly_chart(fig_v_buy, width='stretch', key='fig_13f_v_buy')
-                else:
-                    st.info("無市值買入數據。")
-            with _vs_col:
-                st.markdown("### 🔴 Top 20 淨減持（市值 $M）")
-                if _tsv:
-                    _nvs = [n for n, v, f in reversed(_tsv)]
-                    _xvs = [abs(v) for n, v, f in reversed(_tsv)]
-                    _fvs = [f for n, v, f in reversed(_tsv)]
-                    fig_v_sell = go.Figure(go.Bar(
-                        x=_xvs, y=_nvs, orientation='h',
-                        marker_color='rgba(234,57,67,0.85)',
-                        text=[f"${x:,.0f}M ({f}家)" for x, f in zip(_xvs, _fvs)],
-                        textposition='outside',
-                        hovertemplate='%{y}<br>淨減持: $%{x:,.0f}M<extra></extra>',
-                    ))
-                    fig_v_sell.update_layout(
-                        title=f'Top 20 淨減持 — 市值（{_quarter}）',
-                        xaxis_title='市值變化（$M USD）', yaxis_title='',
-                        margin=dict(t=50, b=20, l=165, r=100),
-                        height=540, showlegend=False,
-                    )
-                    st.plotly_chart(fig_v_sell, width='stretch', key='fig_13f_v_sell')
-                else:
-                    st.info("無市值賣出數據。")
-
-        # ── 機構共識 ─────────────────────────────────────────────────────────
-        with _sub_c:
-            st.caption(
-                "機構共識 = 至少 **2 家**機構同向操作的標的，按共識機構數排序。"
-                "多家機構同步增持代表更強的確信度（Conviction）；"
-                "同步減持則是系統性警示信號。顏色深淺對應共識機構數。"
+        # ── Top 30 明細表 ──
+        def _tw_fmt_table(df: pd.DataFrame) -> pd.DataFrame:
+            out = df[["code", "name", "net_shares"]].copy()
+            out.index = range(1, len(out) + 1)
+            out["淨買賣超（萬股）"] = (out["net_shares"] / 10000).round(1).map(
+                lambda x: f"{x:,.1f}"
             )
-            _cv_col, _cs_col = st.columns(2)
-            with _cv_col:
-                st.markdown("### 🟢 共識增持")
-                if _cvb:
-                    _ncvb = [n for n, f, s in reversed(_cvb)]
-                    _xcvb = [f for n, f, s in reversed(_cvb)]
-                    _dcvb = [s // 1_000 for n, f, s in reversed(_cvb)]
-                    _cmax = max(_xcvb) if _xcvb else 5
-                    fig_cv_buy = go.Figure(go.Bar(
-                        x=_xcvb, y=_ncvb, orientation='h',
-                        marker=dict(color=_xcvb, colorscale='Greens',
-                                    cmin=2, cmax=_cmax, showscale=True,
-                                    colorbar=dict(title='機構數', len=0.5, x=1.02)),
-                        text=[f"{f}家 / {d:,}K股" for f, d in zip(_xcvb, _dcvb)],
-                        textposition='outside',
-                        hovertemplate='%{y}<br>共識機構: %{x}家<extra></extra>',
-                    ))
-                    fig_cv_buy.update_layout(
-                        title=f'共識增持（≥2 機構，{_quarter}）',
-                        xaxis=dict(title='機構數', dtick=1, range=[0, _cmax + 2]),
-                        yaxis_title='',
-                        margin=dict(t=50, b=20, l=165, r=80),
-                        height=max(400, len(_cvb) * 28 + 80), showlegend=False,
-                    )
-                    st.plotly_chart(fig_cv_buy, width='stretch', key='fig_13f_cv_buy')
-                else:
-                    st.info("無共識增持（需 ≥2 家機構）。")
-            with _cs_col:
-                st.markdown("### 🔴 共識減持")
-                if _cvs:
-                    _ncvs = [n for n, f, s in reversed(_cvs)]
-                    _xcvs = [f for n, f, s in reversed(_cvs)]
-                    _dcvs = [abs(s) // 1_000 for n, f, s in reversed(_cvs)]
-                    _cmax_s = max(_xcvs) if _xcvs else 5
-                    fig_cv_sell = go.Figure(go.Bar(
-                        x=_xcvs, y=_ncvs, orientation='h',
-                        marker=dict(color=_xcvs, colorscale='Reds',
-                                    cmin=2, cmax=_cmax_s, showscale=True,
-                                    colorbar=dict(title='機構數', len=0.5, x=1.02)),
-                        text=[f"{f}家 / {d:,}K股" for f, d in zip(_xcvs, _dcvs)],
-                        textposition='outside',
-                        hovertemplate='%{y}<br>共識機構: %{x}家<extra></extra>',
-                    ))
-                    fig_cv_sell.update_layout(
-                        title=f'共識減持（≥2 機構，{_quarter}）',
-                        xaxis=dict(title='機構數', dtick=1, range=[0, _cmax_s + 2]),
-                        yaxis_title='',
-                        margin=dict(t=50, b=20, l=165, r=80),
-                        height=max(400, len(_cvs) * 28 + 80), showlegend=False,
-                    )
-                    st.plotly_chart(fig_cv_sell, width='stretch', key='fig_13f_cv_sell')
-                else:
-                    st.info("無共識減持（需 ≥2 家機構）。")
+            if "est_value_億" in df.columns:
+                out["估算金額（億元）"] = df["est_value_億"].apply(
+                    lambda x: f"{x:.1f}" if pd.notna(x) else "—"
+                )
+                return out[["code", "name", "淨買賣超（萬股）", "估算金額（億元）"]].rename(
+                    columns={"code": "代號", "name": "名稱"}
+                )
+            return out[["code", "name", "淨買賣超（萬股）"]].rename(
+                columns={"code": "代號", "name": "名稱"}
+            )
+
+        _tw_tbl_col1, _tw_tbl_col2 = st.columns(2)
+        with _tw_tbl_col1:
+            st.markdown("**📈 前 30 大買超明細**")
+            if not _tw_buy.empty:
+                st.dataframe(_tw_fmt_table(_tw_buy), use_container_width=True, height=520)
+        with _tw_tbl_col2:
+            st.markdown("**📉 前 30 大賣超明細**")
+            if not _tw_sell.empty:
+                st.dataframe(_tw_fmt_table(_tw_sell), use_container_width=True, height=520)
     else:
-        st.error(
-            "⚠️ **13F 資料無法取得** — 所有機構持倉均回傳空值。\n\n"
-            "常見原因：\n"
-            "1. 網路無法連線至 SEC EDGAR（`data.sec.gov` / `www.sec.gov`）\n"
-            "2. EDGAR 限流（429）— 請按「更新 13F」鈕稍後重試\n"
-            "3. 快取存有舊的空結果 — 請按右上角「更新 13F」清除快取"
-        )
-        _diag_col, _link_col = st.columns([1, 2])
-        with _diag_col:
-            if st.button("🔍 診斷 EDGAR 連線", key='btn_edgar_diag'):
-                with st.spinner("測試 SEC EDGAR 連線中…"):
-                    _ok, _msg = dfetch.edgar_connectivity_test()
-                if _ok:
-                    st.success(f"✅ {_msg}")
-                else:
-                    st.error(f"❌ {_msg}")
-        with _link_col:
-            st.markdown(
-                "直接查閱 13F：\n"
-                "- [WhaleWisdom — 13F Holdings](https://whalewisdom.com/)\n"
-                "- [SEC EDGAR 13F 搜尋](https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=13F-HR)"
-            )
+        st.warning("無法載入三大法人買賣超資料，請點選「更新法人資料」重試。")
 
-    with st.expander("💡 方法論與進階應用"):
-        st.markdown("""
-**13F Phase 2 核心改進**
-- **13F-HR/A 修訂版處理**：同一季度若有修訂申報，以最新 filingDate 版本為準，避免採用過時原始申報。
-- **CUSIP 去重**：以 9 位 CUSIP 作為主鍵合併各機構申報，解決不同機構對同一標的使用不同縮寫的問題（如 "APPLE INC" vs "APPLE INCORPORATED"）。
-- **三維排名**：股數（反映機構策略性增減持規模）、市值（反映資金流向強度）、機構共識（反映智慧資金的系統性確信）。
-
-**機構信心評分（Conviction Score）**
-`信心分 = 共識機構數 × |淨增持股數|`，有效過濾「一家大幅單獨加倉」（可能是套利或對沖）
-與「多家小幅共識加倉」（通常代表基本面確信）的差異。
-
-**13F 申報日曆與滯後性**
-| 季度 | 截止日 |
-|------|--------|
-| Q4（Oct–Dec）| 次年 2/14 |
-| Q1（Jan–Mar）| 5/15 |
-| Q2（Apr–Jun）| 8/14 |
-| Q3（Jul–Sep）| 11/14 |
-
-資料有 45 天滯後，建議搭配：**Form 13D/13G**（5% 以上大量收購即時申報）、
-**Option Sweep**（大額選擇權掃倉往往先於持倉更新）、
-**Proxy Form 14A**（機構投票立場反映深度持倉意圖）。
-
-**未來擴充方向**
-**OpenFIGI API** 將 CUSIP 對應至 Ticker，可加入市值百分比（持倉 / AUM），
-避免大型基金稀釋小型基金的 alpha 訊號。
-        """)
 
 
 # ════════════════════════════════════════════════════════
@@ -2120,47 +2007,23 @@ with tab_e:
 
     st.markdown("---")
 
-    # ── 內部輪動 + 13F ─────────────────────────────────────────────────────────
-    col_rot, col_13f = st.columns(2)
-    with col_rot:
-        st.subheader("🔄 內部輪動指數")
-        st.caption("景氣循環 (XLY+XLI+XLB+XLF) vs 防禦 (XLP+XLU+XLV+XLRE) 等權相對強弱")
-        rot_df = filt("SECTOR_ROTATION")
-        if rot_df is not None and not rot_df.empty:
-            fig_rot = fill_chart(
-                rot_df, "循環/防禦相對強弱指數", "比率",
-                ref_y=0,
-                hover_fmt="%{x|%Y-%m}<br>輪動比率: %{y:.3f}<extra></extra>",
-            )
-            if fig_rot:
-                st.plotly_chart(fig_rot, width='stretch', key='fig_rot')
-            latest_rot = rot_df.iloc[-1]["value"]
-            rot_status = "Risk-On 🟢 景氣循環領先" if latest_rot > 0 else "Risk-Off 🔴 防禦領先"
-            st.metric("最新輪動狀態", rot_status, f"{latest_rot:+.3f}")
-        else:
-            st.info("輪動指數資料抓取中（Yahoo Finance ETF 月頻）")
-
-    with col_13f:
-        st.subheader("🏦 13F 持股偏好指數")
-        st.caption(
-            "循環 vs 防禦 ETF 成交量加速度差值（代理版）\n"
-            "正值 = 機構資金偏向景氣循環；負值 = 偏向防禦\n"
-            "⚠️ 此為代理指標，完整 SEC EDGAR 13F 版本列為 Phase 2"
+    # ── 美股內部輪動 ────────────────────────────────────────────────────────────
+    st.subheader("🔄 內部輪動指數")
+    st.caption("景氣循環 (XLY+XLI+XLB+XLF) vs 防禦 (XLP+XLU+XLV+XLRE) 等權相對強弱")
+    rot_df = filt("SECTOR_ROTATION")
+    if rot_df is not None and not rot_df.empty:
+        fig_rot = fill_chart(
+            rot_df, "循環/防禦相對強弱指數", "比率",
+            ref_y=0,
+            hover_fmt="%{x|%Y-%m}<br>輪動比率: %{y:.3f}<extra></extra>",
         )
-        tf_df = filt("THIRTEENF_NET_ADD")
-        if tf_df is not None and not tf_df.empty:
-            fig_13f = fill_chart(
-                tf_df, "13F 代理指標（循環/防禦量能差）", "比率差",
-                ref_y=0,
-                hover_fmt="%{x|%Y-%m}<br>差值: %{y:.3f}<extra></extra>",
-            )
-            if fig_13f:
-                st.plotly_chart(fig_13f, width='stretch', key='fig_13f')
-            latest_13f = tf_df.iloc[-1]["value"]
-            label_13f = "機構偏向景氣循環 🟢" if latest_13f > 0 else "機構偏向防禦 🔴"
-            st.metric("最新 13F 偏好", label_13f, f"{latest_13f:+.3f}")
-        else:
-            st.info("13F 代理指標資料抓取中（Yahoo Finance ETF 量能）")
+        if fig_rot:
+            st.plotly_chart(fig_rot, width='stretch', key='fig_rot')
+        latest_rot = rot_df.iloc[-1]["value"]
+        rot_status = "Risk-On 🟢 景氣循環領先" if latest_rot > 0 else "Risk-Off 🔴 防禦領先"
+        st.metric("最新輪動狀態", rot_status, f"{latest_rot:+.3f}")
+    else:
+        st.info("輪動指數資料抓取中（Yahoo Finance ETF 月頻）")
 
     st.markdown("---")
 
@@ -2180,14 +2043,725 @@ with tab_e:
 | 🟡 觀望 | Score 10–14 | 50%–70% |
 | 🔴 收縮 | Score ≤ 9 | ≤ 45% |
 
-**13F 限制**
-- SEC 13F 揭露時間：季末後 45 天，有時滯。
-- 本版本使用 ETF 量能加速度作為代理，方向性約 0.6–0.8 相關。
-- Phase 2 計劃接入 SEC EDGAR FULL-INDEX，提升準確性。
-
 **內部輪動限制**
 - 以景氣循環 ETF（XLY/XLI/XLB/XLF）vs 防禦 ETF（XLP/XLU/XLV/XLRE）等權月收相對強弱計算。
 - Yahoo Finance 月頻資料可能有 1–3 個交易日延遲。
+""")
+
+
+# ════════════════════════════════════════════════════════
+# Tab F：台股資金輪動
+# ════════════════════════════════════════════════════════
+with tab_f:
+    st.markdown("## F 台股資金輪動")
+    st.caption(
+        "追蹤 19 個 TWSE 官方類股指數的動能、資金流向與退潮訊號。"
+        "數據來源：台灣證交所 MI_INDEX20，每日收盤後更新。"
+    )
+
+    with st.spinner("載入台股類股資料（首次約 30–90 秒）…"):
+        tw_sector = load_tw_sector_data()
+
+    sector_df   = tw_sector.get("sector_df",  pd.DataFrame())
+    turnover_df = tw_sector.get("turnover_df", pd.DataFrame())
+    instit_df   = tw_sector.get("instit_df",  pd.DataFrame())
+    momentum_df = tw_sector.get("momentum_df", pd.DataFrame())
+    signals     = tw_sector.get("signals", {})
+
+    if sector_df.empty:
+        st.warning("台股類股資料暫時無法取得，請稍後重試。")
+        st.info("確認 TWSE MI_INDEX20 API 可連線後重新整理頁面。")
+    else:
+        # ── 輪動訊號橫幅 ──────────────────────────────────────────────────────
+        if signals:
+            col_hot, col_cool, col_warm, col_cold = st.columns(4)
+            _sig_style = "border-radius:8px; padding:8px 10px; margin:2px 0;"
+            with col_hot:
+                st.markdown(
+                    f"<div style='background:#1a3a1a;{_sig_style}'>"
+                    f"<b>🟢 強勢類股</b><br>" +
+                    "<br>".join(signals.get("hot", ["—"])) +
+                    "</div>", unsafe_allow_html=True
+                )
+            with col_cool:
+                st.markdown(
+                    f"<div style='background:#3a2a0a;{_sig_style}'>"
+                    f"<b>🟡 退潮中</b><br>" +
+                    "<br>".join(signals.get("cooling", ["—"])) +
+                    "</div>", unsafe_allow_html=True
+                )
+            with col_warm:
+                st.markdown(
+                    f"<div style='background:#0a2a3a;{_sig_style}'>"
+                    f"<b>🔵 升溫中（候選）</b><br>" +
+                    "<br>".join(signals.get("warming", ["—"])) +
+                    "</div>", unsafe_allow_html=True
+                )
+            with col_cold:
+                st.markdown(
+                    f"<div style='background:#2a0a0a;{_sig_style}'>"
+                    f"<b>🔴 弱勢類股</b><br>" +
+                    "<br>".join(signals.get("cold", ["—"])) +
+                    "</div>", unsafe_allow_html=True
+                )
+            st.markdown("")
+
+        # ── 三子頁 ───────────────────────────────────────────────────────────
+        f_snap, f_heat, f_flow, f_13f = st.tabs([
+            "📊 輪動快照（四象限）",
+            "🌡️ 動能熱力圖",
+            "💹 資金流向",
+            "🏦 13F 法人持倉",
+        ])
+
+        # ──── F-1：輪動快照（四象限散點圖）────────────────────────────────────
+        with f_snap:
+            st.markdown("#### 類股輪動四象限")
+            st.caption(
+                "X 軸 = 近 12 週報酬率（長期動能）｜"
+                "Y 軸 = 動能加速度（近 4 週 vs 前 4 週）｜"
+                "點大小 = 最新收盤價（相對大小）"
+            )
+
+            if not momentum_df.empty:
+                _mdf = momentum_df.copy()
+                _mdf["quadrant"] = _mdf.apply(
+                    lambda r: (
+                        "🟢 強勢" if r["ret_short_pct"] >= 0 and r["acceleration"] >= 0 else
+                        "🟡 退潮中" if r["ret_short_pct"] >= 0 and r["acceleration"] < 0 else
+                        "🔵 升溫中" if r["ret_short_pct"] < 0 and r["acceleration"] >= 0 else
+                        "🔴 弱勢"
+                    ), axis=1
+                )
+                _color_map = {
+                    "🟢 強勢":   "#4caf50",
+                    "🟡 退潮中": "#ff9800",
+                    "🔵 升溫中": "#2196f3",
+                    "🔴 弱勢":   "#f44336",
+                }
+                fig_snap = px.scatter(
+                    _mdf,
+                    x="ret_long_pct",
+                    y="acceleration",
+                    text="sector_name",
+                    color="quadrant",
+                    color_discrete_map=_color_map,
+                    size="last_close",
+                    size_max=40,
+                    labels={
+                        "ret_long_pct": "近 12 週報酬率 (%)",
+                        "acceleration":  "動能加速度 (%)",
+                        "quadrant":      "象限",
+                    },
+                    height=520,
+                )
+                fig_snap.update_traces(textposition="top center", textfont_size=11)
+                fig_snap.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
+                fig_snap.add_vline(x=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
+
+                # 象限標籤
+                x_max = _mdf["ret_long_pct"].abs().max() * 1.1 or 10
+                y_max = _mdf["acceleration"].abs().max()  * 1.1 or 5
+                for label, xp, yp in [
+                    ("強勢", x_max * 0.7,  y_max * 0.7),
+                    ("退潮中", x_max * 0.7, -y_max * 0.7),
+                    ("升溫中", -x_max * 0.7,  y_max * 0.7),
+                    ("弱勢", -x_max * 0.7, -y_max * 0.7),
+                ]:
+                    fig_snap.add_annotation(
+                        x=xp, y=yp, text=label,
+                        font=dict(size=13, color="rgba(255,255,255,0.25)"),
+                        showarrow=False,
+                    )
+                fig_snap.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(15,15,20,1)",
+                    font_color="#ddd", margin=dict(l=40, r=20, t=20, b=40),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                )
+                st.plotly_chart(fig_snap, use_container_width=True, key="fig_f_snap")
+
+                # 退潮→候選對照表
+                if signals.get("cooling") and signals.get("warming"):
+                    st.markdown("**退潮 → 下一波候選對照**")
+                    col_l, col_r = st.columns(2)
+                    with col_l:
+                        st.markdown("**退潮中（資金可能流出）**")
+                        for s in signals["cooling"]:
+                            st.markdown(f"- {s}")
+                    with col_r:
+                        st.markdown("**升溫中（下一波候選）**")
+                        for s in signals["warming"]:
+                            st.markdown(f"- {s}")
+            else:
+                if sector_df.empty:
+                    st.warning("類股價格資料載入失敗，請確認 TWSE 連線後重整頁面。")
+                else:
+                    n_days_avail = sector_df.groupby("sector_name")["date"].count().min() if not sector_df.empty else 0
+                    st.info(
+                        f"動能計算需要每個類股至少 60 個交易日的歷史資料（目前：{n_days_avail} 天）。\n\n"
+                        "若剛部署，請執行：`docker exec macro-dashboard python scheduler.py --run-now`"
+                    )
+
+        # ──── F-2：動能熱力圖 ─────────────────────────────────────────────────
+        with f_heat:
+            st.markdown("#### 類股動能熱力圖（近 12 週日報酬）")
+            st.caption("顏色：紅=上漲、藍=下跌。欄位=週，列=類股，按近 4 週報酬排序。")
+
+            if not sector_df.empty and "chg_pct" in sector_df.columns:
+                _heat = sector_df.copy()
+                _heat["week"] = _heat["date"].dt.to_period("W").dt.start_time
+
+                # 週度加總報酬（近 12 週）
+                _weekly = (
+                    _heat.groupby(["week", "sector_name"])["chg_pct"]
+                    .sum()
+                    .reset_index()
+                )
+                _recent_weeks = sorted(_weekly["week"].unique())[-12:]
+                _weekly = _weekly[_weekly["week"].isin(_recent_weeks)]
+
+                _pivot = _weekly.pivot(index="sector_name", columns="week", values="chg_pct").fillna(0)
+
+                # 按近 4 週累積報酬排序
+                if len(_pivot.columns) >= 4:
+                    _pivot["sort_key"] = _pivot.iloc[:, -4:].sum(axis=1)
+                    _pivot = _pivot.sort_values("sort_key", ascending=False).drop(columns="sort_key")
+
+                # 欄位標籤簡化為 mm/dd
+                col_labels = [f"{c.month:02d}/{c.day:02d}" for c in _pivot.columns]
+
+                fig_heat = go.Figure(go.Heatmap(
+                    z=_pivot.values,
+                    x=col_labels,
+                    y=_pivot.index.tolist(),
+                    colorscale=[
+                        [0.0, "#1a5276"], [0.4, "#2980b9"], [0.5, "#222"],
+                        [0.6, "#e74c3c"], [1.0, "#7b241c"],
+                    ],
+                    zmid=0,
+                    text=[[f"{v:.1f}%" for v in row] for row in _pivot.values],
+                    texttemplate="%{text}",
+                    textfont_size=9,
+                    hovertemplate="類股: %{y}<br>週: %{x}<br>報酬: %{z:.1f}%<extra></extra>",
+                ))
+                fig_heat.update_layout(
+                    height=max(400, len(_pivot) * 28),
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    font_color="#ddd",
+                    xaxis=dict(side="top"),
+                    margin=dict(l=100, r=20, t=60, b=20),
+                )
+                st.plotly_chart(fig_heat, use_container_width=True, key="fig_f_heat")
+            else:
+                st.info("熱力圖需要 sector_df 包含 chg_pct 欄位，目前資料尚未就緒。")
+
+            # ── 法人類股買超（5日彙計）────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("#### 🏛️ 三大法人各類股 5 日淨買超（千股）")
+            st.caption("外資 + 投信 + 自營商合計。正值＝淨買，負值＝淨賣。")
+            if not instit_df.empty and "total_net" in instit_df.columns:
+                _instit_agg = (
+                    instit_df.groupby("sector_name")[["foreign_net", "trust_net",
+                                                       "dealer_net", "total_net"]]
+                    .sum()
+                    .reset_index()
+                    .sort_values("total_net", ascending=False)
+                )
+                _instit_agg.columns = ["類股", "外資淨買超", "投信淨買超", "自營商淨買超", "合計"]
+                # Colour bar based on total
+                _max_abs = _instit_agg["合計"].abs().max() or 1
+                st.dataframe(
+                    _instit_agg.style.background_gradient(
+                        subset=["合計"], cmap="RdYlGn",
+                        vmin=-_max_abs, vmax=_max_abs,
+                    ).format({"外資淨買超": "{:,.0f}", "投信淨買超": "{:,.0f}",
+                               "自營商淨買超": "{:,.0f}", "合計": "{:,.0f}"}),
+                    use_container_width=True, height=400,
+                )
+            else:
+                st.info(
+                    "法人類股買超資料尚未就緒。\n\n"
+                    "首次啟動請執行：`docker exec macro-dashboard python scheduler.py --run-now`\n\n"
+                    "每日 02:30（台北時間）自動更新。"
+                )
+
+        # ──── F-3：成交值比重趨勢 ─────────────────────────────────────────────
+        with f_flow:
+            st.markdown("#### 各類股成交值佔大盤比重（近 60 交易日）")
+            st.caption("可識別資金從哪個類股流出、流入哪個類股。")
+
+            if not turnover_df.empty:
+                # Top 8 類股（其餘合併為「其他」）
+                _top_sectors = (
+                    turnover_df.groupby("sector_name")["turnover_億"]
+                    .sum()
+                    .nlargest(8)
+                    .index.tolist()
+                )
+                _flow = turnover_df.copy()
+                _flow["sector_name"] = _flow["sector_name"].apply(
+                    lambda s: s if s in _top_sectors else "其他"
+                )
+                _flow_agg = (
+                    _flow.groupby(["date", "sector_name"])["turnover_share_pct"]
+                    .sum()
+                    .reset_index()
+                )
+
+                fig_flow = px.area(
+                    _flow_agg,
+                    x="date",
+                    y="turnover_share_pct",
+                    color="sector_name",
+                    labels={
+                        "date": "日期",
+                        "turnover_share_pct": "成交值佔比 (%)",
+                        "sector_name": "類股",
+                    },
+                    height=420,
+                )
+                fig_flow.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(15,15,20,1)",
+                    font_color="#ddd",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    margin=dict(l=40, r=20, t=30, b=40),
+                    hovermode="x unified",
+                )
+                st.plotly_chart(fig_flow, use_container_width=True, key="fig_f_flow")
+
+                # 最新一日排行
+                _latest_date = turnover_df["date"].max()
+                _latest = (
+                    turnover_df[turnover_df["date"] == _latest_date]
+                    .sort_values("turnover_share_pct", ascending=False)
+                    [["sector_name", "turnover_億", "turnover_share_pct"]]
+                    .rename(columns={
+                        "sector_name": "類股",
+                        "turnover_億": "成交額(億)",
+                        "turnover_share_pct": "佔比(%)",
+                    })
+                    .reset_index(drop=True)
+                )
+                st.markdown(f"**最新交易日（{_latest_date.strftime('%Y-%m-%d')}）類股成交排行**")
+                st.dataframe(_latest, use_container_width=True, height=360)
+            else:
+                st.info(
+                    "成交值資料載入中，請稍後重整頁面。\n\n"
+                    "首次啟動請執行：`docker exec macro-dashboard python scheduler.py --run-now`"
+                )
+
+        # ──── F-4：13F 法人持倉 ───────────────────────────────────────────────
+        with f_13f:
+            st.subheader("🏦 13F 機構持倉 — Smart Money 動態")
+            st.caption(
+                "整合 SEC EDGAR 13F-HR / 13F-HR/A：Berkshire、Citadel、Two Sigma 等 20 大機構。"
+                "以 CUSIP 為主鍵去重；13F-HR/A 修訂版優先。三個維度排名：股數 / 市值 / 機構共識。"
+                "首次載入約 20-30 秒，之後 24 小時快取。"
+            )
+
+            # 13F 代理指標（ETF 量能差）
+            st.markdown("#### 📈 循環 vs 防禦量能差（代理指標）")
+            st.caption(
+                "循環 vs 防禦 ETF 成交量加速度差值（代理版）｜"
+                "正值 = 機構資金偏向景氣循環；負值 = 偏向防禦"
+            )
+            tf_df = filt("THIRTEENF_NET_ADD")
+            if tf_df is not None and not tf_df.empty:
+                fig_13f_proxy = fill_chart(
+                    tf_df, "13F 代理指標（循環/防禦量能差）", "比率差",
+                    ref_y=0,
+                    hover_fmt="%{x|%Y-%m}<br>差值: %{y:.3f}<extra></extra>",
+                )
+                if fig_13f_proxy:
+                    st.plotly_chart(fig_13f_proxy, width='stretch', key='fig_13f_proxy')
+                latest_13f_p = tf_df.iloc[-1]["value"]
+                label_13f_p = "機構偏向景氣循環 🟢" if latest_13f_p > 0 else "機構偏向防禦 🔴"
+                st.metric("最新 13F 偏好", label_13f_p, f"{latest_13f_p:+.3f}")
+            else:
+                st.info("13F 代理指標資料抓取中（Yahoo Finance ETF 量能）")
+
+            st.markdown("---")
+
+            # SEC EDGAR 13F Smart Money
+            _13f_hd, _13f_bt = st.columns([3, 1])
+            with _13f_hd:
+                st.markdown(
+                    "📌 **方法**：CUSIP 主鍵去重 → 各機構當季 vs 上季持股差值 → 20 大機構加總。"
+                    "僅計 SOLE / DFND 自主裁量持股，避免選擇性持股雙重計算。"
+                )
+            with _13f_bt:
+                if st.button("🔄 更新 13F", key='btn_13f_refresh',
+                             help="清除快取並重新抓取 EDGAR（約 20-30 秒）"):
+                    load_13f_data.clear()
+                    st.rerun()
+
+            with st.spinner("從 SEC EDGAR 抓取 13F 持倉中（每日快取 24h）…"):
+                _smart = load_13f_data()
+
+            _quarter    = _smart.get("quarter", "N/A")
+            _fund_count = _smart.get("fund_count", 0)
+            _tbs  = _smart.get("top_buy_shares",  [])
+            _tss  = _smart.get("top_sell_shares", [])
+            _tbv  = _smart.get("top_buy_value",   [])
+            _tsv  = _smart.get("top_sell_value",  [])
+            _cvb  = _smart.get("conviction_buy",  [])
+            _cvs  = _smart.get("conviction_sell", [])
+
+            _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+            with _mc1:
+                st.metric("📅 最新季度", _quarter)
+            with _mc2:
+                st.metric("🏛️ 機構覆蓋", f"{_fund_count} / 20")
+            with _mc3:
+                _tracked = len(set(n for n, *_ in _tbs) | set(n for n, *_ in _tss))
+                st.metric("📋 追蹤標的", f"{_tracked} 檔")
+            with _mc4:
+                st.metric("🤝 共識持股", f"{len(_cvb) + len(_cvs)} 檔")
+
+            if _tbs or _tss or _tbv or _tsv or _cvb or _cvs:
+                _sub_rank, _sub_s, _sub_v, _sub_c = st.tabs([
+                    "🏆 分類排名總覽", "📊 股數排名", "💵 市值排名（USD）", "🤝 機構共識"
+                ])
+
+                with _sub_rank:
+                    st.markdown("### 🏆 分類排名總覽")
+                    st.caption(
+                        f"資料期間：{_quarter}　｜　追蹤基金：{_fund_count} 家　｜　"
+                        "依淨增持市值排名，附板塊分類標籤"
+                    )
+
+                    _rk1, _rk2, _rk3, _rk4 = st.columns(4)
+                    with _rk1:
+                        st.metric("追蹤基金數", f"{_fund_count} 家")
+                    with _rk2:
+                        st.metric("淨增持標的", f"{len(_tbs)} 檔")
+                    with _rk3:
+                        st.metric("淨減持標的", f"{len(_tss)} 檔")
+                    with _rk4:
+                        st.metric("共識持股", f"{len(_cvb) + len(_cvs)} 檔")
+
+                    st.markdown("---")
+
+                    _all_sectors = list(_SECTOR_COLOR.keys())
+                    _sel_sectors = st.multiselect(
+                        "板塊篩選（空白 = 全部）",
+                        options=_all_sectors,
+                        default=[],
+                        key="rank_sector_filter",
+                    )
+
+                    _rank_rows = []
+                    for rank, (name, val_m, n_funds) in enumerate(_tbv, 1):
+                        sector = _classify_sector(name)
+                        _rank_rows.append({
+                            "排名": rank,
+                            "持倉名稱": name,
+                            "板塊": sector,
+                            "淨增持（$M）": val_m,
+                            "共識基金數": n_funds,
+                            "訊號": "🟢 買入" if val_m > 0 else "🔴 賣出",
+                        })
+
+                    _rank_df = pd.DataFrame(_rank_rows)
+                    if _sel_sectors:
+                        _rank_df = _rank_df[_rank_df["板塊"].isin(_sel_sectors)]
+
+                    if not _rank_df.empty:
+                        _colors = [_SECTOR_COLOR.get(s, _SECTOR_COLOR["其他"])
+                                   for s in _rank_df["板塊"]]
+                        _text_labels = [
+                            f"${v:,.0f}M | {s} | {f}家"
+                            for v, s, f in zip(
+                                _rank_df["淨增持（$M）"],
+                                _rank_df["板塊"],
+                                _rank_df["共識基金數"],
+                            )
+                        ]
+                        fig_rank = go.Figure(go.Bar(
+                            x=list(_rank_df["淨增持（$M）"]),
+                            y=list(_rank_df["持倉名稱"]),
+                            orientation='h',
+                            marker_color=_colors,
+                            text=_text_labels,
+                            textposition='outside',
+                            hovertemplate='<b>%{y}</b><br>淨增持：$%{x:,.0f}M<br><extra></extra>',
+                        ))
+                        fig_rank.update_layout(
+                            title=f"Top {len(_rank_df)} 持倉 — 分類排名（{_quarter}）",
+                            xaxis_title="淨增持市值（$M USD）",
+                            yaxis_title="",
+                            margin=dict(t=55, b=20, l=175, r=130),
+                            height=max(400, len(_rank_df) * 28 + 80),
+                            showlegend=False,
+                        )
+                        st.plotly_chart(fig_rank, width='stretch', key='fig_rank_main')
+
+                    st.markdown("#### 📊 板塊資金流向匯總")
+                    _sector_summary = (
+                        _rank_df.groupby("板塊")["淨增持（$M）"]
+                        .sum()
+                        .reset_index()
+                        .sort_values("淨增持（$M）", ascending=False)
+                    )
+                    if not _sector_summary.empty:
+                        _sc_colors = [_SECTOR_COLOR.get(s, _SECTOR_COLOR["其他"])
+                                      for s in _sector_summary["板塊"]]
+                        fig_sector = go.Figure(go.Bar(
+                            x=list(_sector_summary["板塊"]),
+                            y=list(_sector_summary["淨增持（$M）"]),
+                            marker_color=_sc_colors,
+                            text=[f"${v:,.0f}M" for v in _sector_summary["淨增持（$M）"]],
+                            textposition='outside',
+                            hovertemplate='%{x}<br>合計：$%{y:,.0f}M<extra></extra>',
+                        ))
+                        fig_sector.update_layout(
+                            title="板塊資金流量（各板塊淨增持加總）",
+                            xaxis_title="", yaxis_title="淨增持（$M）",
+                            margin=dict(t=55, b=20, l=40, r=20),
+                            height=320, showlegend=False,
+                        )
+                        st.plotly_chart(fig_sector, width='stretch', key='fig_rank_sector')
+
+                    st.markdown("#### 📋 持倉明細（可排序）")
+                    if not _rank_df.empty:
+                        max_val = float(_rank_df["淨增持（$M）"].abs().max()) if len(_rank_df) > 0 else 1000.0
+                        st.dataframe(
+                            _rank_df,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "排名":        st.column_config.NumberColumn(width="small"),
+                                "持倉名稱":   st.column_config.TextColumn(width="medium"),
+                                "板塊":       st.column_config.TextColumn(width="small"),
+                                "淨增持（$M）": st.column_config.ProgressColumn(
+                                    "淨增持（$M）",
+                                    help="淨增持市值（百萬美元）",
+                                    format="$%.1f M",
+                                    min_value=0,
+                                    max_value=max_val,
+                                    width="medium"
+                                ),
+                                "共識基金數": st.column_config.ProgressColumn(
+                                    "共識基金數",
+                                    help="同向操作的機構數量",
+                                    format="%d 家",
+                                    min_value=0,
+                                    max_value=20,
+                                    width="small"
+                                ),
+                                "訊號":       st.column_config.TextColumn(width="small"),
+                            },
+                        )
+
+                with _sub_s:
+                    _sb_col, _ss_col = st.columns(2)
+                    with _sb_col:
+                        st.markdown("### 🟢 Top 20 淨增持（股數）")
+                        if _tbs:
+                            _nb = [n for n, v, f in reversed(_tbs)]
+                            _xb = [v // 1_000 for n, v, f in reversed(_tbs)]
+                            _fb = [f for n, v, f in reversed(_tbs)]
+                            fig_s_buy = go.Figure(go.Bar(
+                                x=_xb, y=_nb, orientation='h',
+                                marker_color='rgba(38,166,91,0.85)',
+                                text=[f"{x:,}K ({f}家)" for x, f in zip(_xb, _fb)],
+                                textposition='outside',
+                                hovertemplate='%{y}<br>淨增持: %{x:,}K股<extra></extra>',
+                            ))
+                            fig_s_buy.update_layout(
+                                title=f'Top 20 淨增持 — 股數（{_quarter}）',
+                                xaxis_title='股數（千股）', yaxis_title='',
+                                margin=dict(t=50, b=20, l=165, r=90),
+                                height=540, showlegend=False,
+                            )
+                            st.plotly_chart(fig_s_buy, width='stretch', key='fig_13f_s_buy')
+                        else:
+                            st.info("無買入數據。")
+                    with _ss_col:
+                        st.markdown("### 🔴 Top 20 淨減持（股數）")
+                        if _tss:
+                            _ns = [n for n, v, f in reversed(_tss)]
+                            _xs = [abs(v) // 1_000 for n, v, f in reversed(_tss)]
+                            _fs = [f for n, v, f in reversed(_tss)]
+                            fig_s_sell = go.Figure(go.Bar(
+                                x=_xs, y=_ns, orientation='h',
+                                marker_color='rgba(234,57,67,0.85)',
+                                text=[f"{x:,}K ({f}家)" for x, f in zip(_xs, _fs)],
+                                textposition='outside',
+                                hovertemplate='%{y}<br>淨減持: %{x:,}K股<extra></extra>',
+                            ))
+                            fig_s_sell.update_layout(
+                                title=f'Top 20 淨減持 — 股數（{_quarter}）',
+                                xaxis_title='股數（千股）', yaxis_title='',
+                                margin=dict(t=50, b=20, l=165, r=90),
+                                height=540, showlegend=False,
+                            )
+                            st.plotly_chart(fig_s_sell, width='stretch', key='fig_13f_s_sell')
+                        else:
+                            st.info("無賣出數據。")
+
+                with _sub_v:
+                    _vb_col, _vs_col = st.columns(2)
+                    with _vb_col:
+                        st.markdown("### 🟢 Top 20 淨增持（市值 $M）")
+                        if _tbv:
+                            _nvb = [n for n, v, f in reversed(_tbv)]
+                            _xvb = [v for n, v, f in reversed(_tbv)]
+                            _fvb = [f for n, v, f in reversed(_tbv)]
+                            fig_v_buy = go.Figure(go.Bar(
+                                x=_xvb, y=_nvb, orientation='h',
+                                marker_color='rgba(38,166,91,0.85)',
+                                text=[f"${x:,.0f}M ({f}家)" for x, f in zip(_xvb, _fvb)],
+                                textposition='outside',
+                                hovertemplate='%{y}<br>淨增持: $%{x:,.0f}M<extra></extra>',
+                            ))
+                            fig_v_buy.update_layout(
+                                title=f'Top 20 淨增持 — 市值（{_quarter}）',
+                                xaxis_title='市值變化（$M USD）', yaxis_title='',
+                                margin=dict(t=50, b=20, l=165, r=100),
+                                height=540, showlegend=False,
+                            )
+                            st.plotly_chart(fig_v_buy, width='stretch', key='fig_13f_v_buy')
+                        else:
+                            st.info("無市值買入數據。")
+                    with _vs_col:
+                        st.markdown("### 🔴 Top 20 淨減持（市值 $M）")
+                        if _tsv:
+                            _nvs = [n for n, v, f in reversed(_tsv)]
+                            _xvs = [abs(v) for n, v, f in reversed(_tsv)]
+                            _fvs = [f for n, v, f in reversed(_tsv)]
+                            fig_v_sell = go.Figure(go.Bar(
+                                x=_xvs, y=_nvs, orientation='h',
+                                marker_color='rgba(234,57,67,0.85)',
+                                text=[f"${x:,.0f}M ({f}家)" for x, f in zip(_xvs, _fvs)],
+                                textposition='outside',
+                                hovertemplate='%{y}<br>淨減持: $%{x:,.0f}M<extra></extra>',
+                            ))
+                            fig_v_sell.update_layout(
+                                title=f'Top 20 淨減持 — 市值（{_quarter}）',
+                                xaxis_title='市值變化（$M USD）', yaxis_title='',
+                                margin=dict(t=50, b=20, l=165, r=100),
+                                height=540, showlegend=False,
+                            )
+                            st.plotly_chart(fig_v_sell, width='stretch', key='fig_13f_v_sell')
+                        else:
+                            st.info("無市值賣出數據。")
+
+                with _sub_c:
+                    st.caption(
+                        "機構共識 = 至少 **2 家**機構同向操作的標的，按共識機構數排序。"
+                        "多家機構同步增持代表更強的確信度（Conviction）；"
+                        "同步減持則是系統性警示信號。顏色深淺對應共識機構數。"
+                    )
+                    _cv_col, _cs_col = st.columns(2)
+                    with _cv_col:
+                        st.markdown("### 🟢 共識增持")
+                        if _cvb:
+                            _ncvb = [n for n, f, s in reversed(_cvb)]
+                            _xcvb = [f for n, f, s in reversed(_cvb)]
+                            _dcvb = [s // 1_000 for n, f, s in reversed(_cvb)]
+                            _cmax = max(_xcvb) if _xcvb else 5
+                            fig_cv_buy = go.Figure(go.Bar(
+                                x=_xcvb, y=_ncvb, orientation='h',
+                                marker=dict(color=_xcvb, colorscale='Greens',
+                                            cmin=2, cmax=_cmax, showscale=True,
+                                            colorbar=dict(title='機構數', len=0.5, x=1.02)),
+                                text=[f"{f}家 / {d:,}K股" for f, d in zip(_xcvb, _dcvb)],
+                                textposition='outside',
+                                hovertemplate='%{y}<br>共識機構: %{x}家<extra></extra>',
+                            ))
+                            fig_cv_buy.update_layout(
+                                title=f'共識增持（≥2 機構，{_quarter}）',
+                                xaxis=dict(title='機構數', dtick=1, range=[0, _cmax + 2]),
+                                yaxis_title='',
+                                margin=dict(t=50, b=20, l=165, r=80),
+                                height=max(400, len(_cvb) * 28 + 80), showlegend=False,
+                            )
+                            st.plotly_chart(fig_cv_buy, width='stretch', key='fig_13f_cv_buy')
+                        else:
+                            st.info("無共識增持（需 ≥2 家機構）。")
+                    with _cs_col:
+                        st.markdown("### 🔴 共識減持")
+                        if _cvs:
+                            _ncvs = [n for n, f, s in reversed(_cvs)]
+                            _xcvs = [f for n, f, s in reversed(_cvs)]
+                            _dcvs = [abs(s) // 1_000 for n, f, s in reversed(_cvs)]
+                            _cmax_s = max(_xcvs) if _xcvs else 5
+                            fig_cv_sell = go.Figure(go.Bar(
+                                x=_xcvs, y=_ncvs, orientation='h',
+                                marker=dict(color=_xcvs, colorscale='Reds',
+                                            cmin=2, cmax=_cmax_s, showscale=True,
+                                            colorbar=dict(title='機構數', len=0.5, x=1.02)),
+                                text=[f"{f}家 / {d:,}K股" for f, d in zip(_xcvs, _dcvs)],
+                                textposition='outside',
+                                hovertemplate='%{y}<br>共識機構: %{x}家<extra></extra>',
+                            ))
+                            fig_cv_sell.update_layout(
+                                title=f'共識減持（≥2 機構，{_quarter}）',
+                                xaxis=dict(title='機構數', dtick=1, range=[0, _cmax_s + 2]),
+                                yaxis_title='',
+                                margin=dict(t=50, b=20, l=165, r=80),
+                                height=max(400, len(_cvs) * 28 + 80), showlegend=False,
+                            )
+                            st.plotly_chart(fig_cv_sell, width='stretch', key='fig_13f_cv_sell')
+                        else:
+                            st.info("無共識減持（需 ≥2 家機構）。")
+            else:
+                st.error(
+                    "⚠️ **13F 資料無法取得** — 所有機構持倉均回傳空值。\n\n"
+                    "常見原因：\n"
+                    "1. 網路無法連線至 SEC EDGAR（`data.sec.gov` / `www.sec.gov`）\n"
+                    "2. EDGAR 限流（429）— 請按「更新 13F」鈕稍後重試\n"
+                    "3. 快取存有舊的空結果 — 請按右上角「更新 13F」清除快取"
+                )
+                _diag_col, _link_col = st.columns([1, 2])
+                with _diag_col:
+                    if st.button("🔍 診斷 EDGAR 連線", key='btn_edgar_diag'):
+                        with st.spinner("測試 SEC EDGAR 連線中…"):
+                            _ok, _msg = dfetch.edgar_connectivity_test()
+                        if _ok:
+                            st.success(f"✅ {_msg}")
+                        else:
+                            st.error(f"❌ {_msg}")
+                with _link_col:
+                    st.markdown(
+                        "直接查閱 13F：\n"
+                        "- [WhaleWisdom — 13F Holdings](https://whalewisdom.com/)\n"
+                        "- [SEC EDGAR 13F 搜尋](https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=13F-HR)"
+                    )
+
+            with st.expander("💡 13F 方法論與進階應用"):
+                st.markdown("""
+**13F 核心方法**
+- **13F-HR/A 修訂版處理**：同一季度若有修訂申報，以最新 filingDate 版本為準，避免採用過時原始申報。
+- **CUSIP 去重**：以 9 位 CUSIP 作為主鍵合併各機構申報，解決不同機構對同一標的使用不同縮寫的問題。
+- **三維排名**：股數（反映機構策略性增減持規模）、市值（反映資金流向強度）、機構共識（反映智慧資金的系統性確信）。
+
+**13F 申報日曆**
+| 季度 | 截止日 |
+|------|--------|
+| Q4（Oct–Dec）| 次年 2/14 |
+| Q1（Jan–Mar）| 5/15 |
+| Q2（Apr–Jun）| 8/14 |
+| Q3（Jul–Sep）| 11/14 |
+
+資料有 45 天滯後，建議搭配 Form 13D/13G（5% 以上大量收購即時申報）觀察。
+""")
+
+        st.markdown("---")
+        with st.expander("📖 台股類股指標說明"):
+            st.markdown("""
+**四象限分類**
+| 象限 | 條件 | 意義 |
+|------|------|------|
+| 🟢 強勢 | 近4週報酬 > 0 且 加速度 > 0 | 資金持續流入，趨勢強健 |
+| 🟡 退潮中 | 近4週報酬 > 0 且 加速度 < 0 | 漲幅收斂，資金開始分散 |
+| 🔵 升溫中 | 近4週報酬 < 0 且 加速度 > 0 | 跌勢收斂，可能為下一波布局點 |
+| 🔴 弱勢 | 近4週報酬 < 0 且 加速度 < 0 | 資金持續流出，避免追入 |
+
+**動能加速度**：近 4 週報酬率 − 前 4 週報酬率，正值表示近期漲勢比之前更快。
+
+**資料來源**：台灣證交所 MI_INDEX20（類股指數），每日收盤後更新。
 """)
 
 
@@ -2197,6 +2771,6 @@ with tab_e:
 st.markdown("---")
 st.caption(
     "資料來源：ISM · CIER · NBS · 日本內閣府 · Eurostat · FRED · DBnomics · "
-    "財政部 · 央行 · Yahoo Finance ｜ "
+    "財政部 · 央行 · Yahoo Finance · 證交所 MI_INDEX20 ｜ "
     "每小時自動刷新快取，圖表可互動縮放。"
 )

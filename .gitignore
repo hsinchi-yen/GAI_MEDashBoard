@@ -27,6 +27,8 @@ app_data/
 
 # Docker
 *.env
+*.tar
+*.tar.gz
 
 # Android / Gradle build caches
 android_dashboard/.gradle/

@@ -4,4 +4,20 @@ services:
     container_name: macro-dashboard
     ports:
       - "8501:8501"
+    volumes:
+      - ./app_data/db:/app/app_data/db
+    environment:
+      - FRED_API_KEY=${FRED_API_KEY:-}
     restart: unless-stopped
+
+  scheduler:
+    build: .
+    container_name: macro-scheduler
+    command: python scheduler.py
+    volumes:
+      - ./app_data/db:/app/app_data/db
+    environment:
+      - FRED_API_KEY=${FRED_API_KEY:-}
+    restart: unless-stopped
+    depends_on:
+      - dashboard
