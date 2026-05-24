@@ -87,6 +87,32 @@ _SECTOR_COLOR: dict[str, str] = {
     "其他":   "rgba(100,100,100,0.6)",
 }
 
+# TWSE 19 類股 → 產業大類 (for heatmap grouping & expander table)
+_SECTOR_GROUP: dict[str, str] = {
+    "電子":     "科技",
+    "電機機械": "科技",
+    "電器電纜": "科技",
+    "化學生技醫療": "科技",
+    "金融保險": "金融",
+    "航運":     "工業",
+    "鋼鐵":     "工業",
+    "建材營造": "工業",
+    "汽車":     "工業",
+    "塑膠":     "原物料",
+    "橡膠":     "原物料",
+    "玻璃陶瓷": "原物料",
+    "水泥":     "原物料",
+    "紡織纖維": "消費",
+    "食品":     "消費",
+    "觀光餐旅": "消費",
+    "貿易百貨": "消費",
+    "油電燃氣": "能源",
+    "造紙":     "其他",
+}
+_GROUP_ORDER: dict[str, int] = {
+    "科技": 0, "金融": 1, "工業": 2, "消費": 3, "原物料": 4, "能源": 5, "其他": 6
+}
+
 def _classify_sector(display_name: str) -> str:
     """模糊比對持倉名稱 → 板塊"""
     name_upper = display_name.upper()
@@ -2058,8 +2084,16 @@ with tab_f:
     st.markdown("## F 台股資金輪動")
     st.caption(
         "追蹤 19 個 TWSE 官方類股指數的動能、資金流向與退潮訊號。"
-        "數據來源：台灣證交所 MI_INDEX20，每日收盤後更新。"
+        "數據來源：台灣證交所 MI_INDEX（類股指數），每日收盤後更新。"
     )
+
+    with st.expander("📋 TWSE 19 類股速查表", expanded=False):
+        from fetchers.taiwan_sector import SECTOR_NAMES as _SN
+        _ref_df = pd.DataFrame([
+            {"代碼": code, "類股名稱": name, "產業大類": _SECTOR_GROUP.get(name, "其他")}
+            for code, name in sorted(_SN.items())
+        ])
+        st.dataframe(_ref_df, hide_index=True, width='stretch')
 
     with st.spinner("載入台股類股資料（首次約 30–90 秒）…"):
         tw_sector = load_tw_sector_data()
@@ -2141,6 +2175,7 @@ with tab_f:
                     "🔵 升溫中": "#2196f3",
                     "🔴 弱勢":   "#f44336",
                 }
+                _mdf["產業"] = _mdf["sector_name"].map(_SECTOR_GROUP).fillna("其他")
                 fig_snap = px.scatter(
                     _mdf,
                     x="ret_long_pct",
@@ -2150,10 +2185,13 @@ with tab_f:
                     color_discrete_map=_color_map,
                     size="last_close",
                     size_max=40,
+                    hover_data={"產業": True, "ret_short_pct": ":.1f",
+                                "last_close": False, "quadrant": False},
                     labels={
-                        "ret_long_pct": "近 12 週報酬率 (%)",
-                        "acceleration":  "動能加速度 (%)",
-                        "quadrant":      "象限",
+                        "ret_long_pct":  "近 12 週報酬率 (%)",
+                        "acceleration":   "動能加速度 (%)",
+                        "quadrant":       "象限",
+                        "ret_short_pct":  "近 4 週報酬 (%)",
                     },
                     height=520,
                 )
@@ -2224,10 +2262,17 @@ with tab_f:
 
                 _pivot = _weekly.pivot(index="sector_name", columns="week", values="chg_pct").fillna(0)
 
-                # 按近 4 週累積報酬排序
-                if len(_pivot.columns) >= 4:
-                    _pivot["sort_key"] = _pivot.iloc[:, -4:].sum(axis=1)
-                    _pivot = _pivot.sort_values("sort_key", ascending=False).drop(columns="sort_key")
+                # 先按產業大類分組，同組內再按近 4 週報酬排序
+                _recent4_ret = _pivot.iloc[:, -4:].sum(axis=1) if len(_pivot.columns) >= 4 else _pivot.sum(axis=1)
+                _pivot = _pivot.reindex(
+                    sorted(
+                        _pivot.index,
+                        key=lambda s: (
+                            _GROUP_ORDER.get(_SECTOR_GROUP.get(s, "其他"), 99),
+                            -_recent4_ret.get(s, 0),
+                        ),
+                    )
+                )
 
                 # 欄位標籤簡化為 mm/dd
                 col_labels = [f"{c.month:02d}/{c.day:02d}" for c in _pivot.columns]

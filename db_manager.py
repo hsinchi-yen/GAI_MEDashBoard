@@ -472,6 +472,28 @@ def cleanup_expired() -> int:
         return 0
 
 
+def purge_stale_series(key: str, keep: set[str]) -> int:
+    """
+    Delete ts_rows for `key` whose series_key is NOT in `keep`.
+    Used after sector writes to evict stale numeric keys left by old code.
+    Returns the number of rows deleted.
+    """
+    try:
+        placeholders = ",".join("?" * len(keep))
+        with _conn() as con:
+            cur = con.execute(
+                f"DELETE FROM ts_rows WHERE indicator_id=?"
+                f" AND series_key NOT IN ({placeholders})",
+                [key] + list(keep),
+            )
+        if cur.rowcount:
+            logger.info("purge_stale_series %-30s  removed %d stale keys", key, cur.rowcount)
+        return cur.rowcount
+    except Exception as e:
+        logger.error("purge_stale_series %s: %s", key, e)
+        return 0
+
+
 def trim_to_window(years: int = HISTORY_YEARS) -> int:
     """
     Delete ts_rows older than `years`.

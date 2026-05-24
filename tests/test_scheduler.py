@@ -108,11 +108,12 @@ class TestJobTaiwanSector:
     """Verify sector job splits idx_df into two 3-column writes."""
 
     def _sector_idx_df(self, n: int = 65) -> pd.DataFrame:
+        # Use real SECTOR_NAMES values so purge_stale_series keeps them
         dates = pd.date_range("2024-01-01", periods=n, freq="B")
         return pd.DataFrame({
             "date":        dates.repeat(2),
             "sector_code": ["14", "18"] * n,
-            "sector_name": ["電子", "金融"] * n,
+            "sector_name": ["電子", "金融保險"] * n,
             "close":       [float(i % 100 + 100) for i in range(n * 2)],
             "chg_pct":     [float(i % 5 - 2) for i in range(n * 2)],
         })
@@ -148,7 +149,7 @@ class TestJobTaiwanSector:
             scheduler.job_taiwan_sector(initial=True)
 
         close_raw = db_manager.read("tw_sector_close")
-        assert set(close_raw["series_key"].unique()) == {"電子", "金融"}
+        assert set(close_raw["series_key"].unique()) == {"電子", "金融保險"}
 
     def test_empty_idx_df_does_not_crash(self):
         with patch("scheduler.fetch_tw_sector_indices", return_value=pd.DataFrame()), \

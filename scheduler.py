@@ -76,6 +76,7 @@ from fetchers.taiwan_sector import (
     fetch_tw_sector_indices,
     fetch_tw_sector_turnover,
     fetch_tw_sector_institutional,
+    SECTOR_NAMES as _TW_SECTOR_NAMES,
 )
 
 FRED_KEY = os.environ.get("FRED_API_KEY", "")
@@ -282,6 +283,10 @@ def job_taiwan_sector(*, initial: bool = False) -> None:
                 sub = idx_df[["date", "sector_name", col]].copy()
                 db_manager.write(db_key, sub, ttl_days=1, initial=initial)
                 logger.info("%-5s %-32s %d rows", mode, db_key, len(sub))
+            # Remove stale keys not in current SECTOR_NAMES (e.g. old rank numbers "1"–"20")
+            _valid = set(_TW_SECTOR_NAMES.values())
+            for _db_key in ("tw_sector_close", "tw_sector_chg_pct"):
+                db_manager.purge_stale_series(_db_key, keep=_valid)
     except Exception as e:
         logger.error("Failed to update tw_sector_close/chg_pct: %s", e)
 
