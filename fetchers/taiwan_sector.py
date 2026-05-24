@@ -65,11 +65,46 @@ def _last_trading_days(n: int = 60) -> list[str]:
     return days
 
 
+# Reverse lookup: SECTOR_NAMES value → code  (e.g. "電子" → "14")
+_NAME_TO_CODE: dict[str, str] = {name: code for code, name in SECTOR_NAMES.items()}
+
+# MI_INDEX uses "電子工業類指數" for what SECTOR_NAMES calls "電子"
+# Map stripped index label → SECTOR_NAMES key
+_INDEX_LABEL_ALIASES: dict[str, str] = {
+    "電子工業": "14",  # 電子工業類指數 = 電子類
+}
+
+
+def _resolve_index_label(raw: str) -> tuple[str | None, str | None]:
+    """
+    Convert an MI_INDEX 指數 label to (sector_code, sector_name).
+
+    Examples:
+        "水泥類指數"    → ("01", "水泥")
+        "電子工業類指數" → ("14", "電子")
+        "半導體類指數"  → (None, None)   # sub-index, skip
+    """
+    label = raw.strip()
+    if label.endswith("指數"):
+        label = label[:-2]
+    if label.endswith("類"):
+        label = label[:-1]
+    # Exact match in SECTOR_NAMES values
+    if label in _NAME_TO_CODE:
+        code = _NAME_TO_CODE[label]
+        return code, SECTOR_NAMES[code]
+    # Alias (e.g. "電子工業" → "14")
+    if label in _INDEX_LABEL_ALIASES:
+        code = _INDEX_LABEL_ALIASES[label]
+        return code, SECTOR_NAMES[code]
+    return None, None
+
+
 def fetch_tw_sector_indices(n_days: int = 252) -> pd.DataFrame:
     """
-    Fetch daily close and change% for all TWSE sector indices.
+    Fetch daily close and change% for all 19 TWSE sector indices.
 
-    Source: TWSE MI_INDEX20 (類股指數)
+    Source: TWSE MI_INDEX (afterTrading/MI_INDEX, type=IND, table[0])
     Returns DataFrame with columns: [date, sector_code, sector_name, close, chg_pct]
     """
     records = []
@@ -81,52 +116,63 @@ def fetch_tw_sector_indices(n_days: int = 252) -> pd.DataFrame:
             break
         try:
             resp = requests.get(
-                "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX20",
-                params={"response": "json", "date": date_str},
+                "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX",
+                params={"response": "json", "date": date_str, "type": "IND"},
                 headers=_HDR,
                 timeout=15,
             )
             if resp.status_code != 200:
                 continue
             j = resp.json()
-            if j.get("stat") != "OK" or not j.get("data"):
+            if j.get("stat") != "OK":
                 continue
 
-            fields = j.get("fields", [])
+            # table[0]: 價格指數(臺灣證券交易所) — contains all sector indices
+            tables = j.get("tables", [])
+            if not tables:
+                continue
+            table0 = tables[0]
+            rows = table0.get("data", [])
+            if not rows:
+                continue
+
+            # fields: ['指數', '收盤指數', '漲跌(+/-)', '漲跌點數', '漲跌百分比(%)', ...]
+            fields = table0.get("fields", [])
+            try:
+                close_col = fields.index("收盤指數") if "收盤指數" in fields else 1
+                chg_col   = next((i for i, f in enumerate(fields) if "%" in f), 4)
+            except (ValueError, StopIteration):
+                close_col, chg_col = 1, 4
+
             dt = pd.Timestamp(date_str)
-
-            for row in j["data"]:
-                # Expected fields: 類股名稱, 發行股數, 成交股數, 成交金額, 成交筆數, 最高, 最低, 收盤, 漲跌(%), ...
-                if len(row) < 2:
+            day_added = False
+            for row in rows:
+                if len(row) <= chg_col:
                     continue
-                sector_raw = str(row[0]).strip()
-                # MI_INDEX20 returns names like "電子類"; strip trailing 類 to normalize
-                sector_clean = sector_raw.rstrip("類")
-                code = next((c for c, n in SECTOR_NAMES.items() if n == sector_clean), None)
-                sector_name = sector_clean if code else sector_raw
-
-                # Find close and chg_pct by column name
+                code, sector_name = _resolve_index_label(str(row[0]))
+                if code is None:
+                    continue  # sub-index or composite — skip
                 try:
-                    close_col  = fields.index("收盤") if "收盤" in fields else 7
-                    chg_col    = next((i for i, f in enumerate(fields) if "漲跌" in f and "%" in f), 8)
-                    close_val  = float(str(row[close_col]).replace(",", ""))
-                    chg_val    = float(str(row[chg_col]).replace(",", "").replace("+", ""))
+                    close_val = float(str(row[close_col]).replace(",", ""))
+                    chg_str   = str(row[chg_col]).replace(",", "").replace("+", "").strip()
+                    chg_val   = float(chg_str) if chg_str else 0.0
                 except (ValueError, IndexError):
                     continue
-
                 records.append({
                     "date":        dt,
-                    "sector_code": code or sector_name,
+                    "sector_code": code,
                     "sector_name": sector_name,
                     "close":       close_val,
                     "chg_pct":     chg_val,
                 })
+                day_added = True
 
-            collected += 1
-            time.sleep(0.3)  # polite rate limit
+            if day_added:
+                collected += 1
+            time.sleep(0.3)
 
         except Exception as e:
-            logger.warning("MI_INDEX20 fetch error (%s): %s", date_str, e)
+            logger.warning("MI_INDEX fetch error (%s): %s", date_str, e)
 
     if not records:
         return pd.DataFrame(columns=["date", "sector_code", "sector_name", "close", "chg_pct"])
@@ -137,74 +183,11 @@ def fetch_tw_sector_indices(n_days: int = 252) -> pd.DataFrame:
 
 def fetch_tw_sector_turnover(n_days: int = 60) -> pd.DataFrame:
     """
-    Fetch daily sector trading value and its share of total market turnover.
-
-    Source: TWSE MI_INDEX20 成交金額 field
-    Returns DataFrame: [date, sector_name, turnover_億, turnover_share_pct]
+    TWSE does not expose a JSON API for sector-level turnover.
+    Returns empty DataFrame so callers can handle the no-data case gracefully.
     """
-    records = []
-    dates_to_fetch = _last_trading_days(n_days + 20)
-    collected = 0
-
-    for date_str in dates_to_fetch:
-        if collected >= n_days:
-            break
-        try:
-            resp = requests.get(
-                "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX20",
-                params={"response": "json", "date": date_str},
-                headers=_HDR,
-                timeout=15,
-            )
-            if resp.status_code != 200:
-                continue
-            j = resp.json()
-            if j.get("stat") != "OK" or not j.get("data"):
-                continue
-
-            fields = j.get("fields", [])
-            dt = pd.Timestamp(date_str)
-
-            try:
-                amt_col = fields.index("成交金額") if "成交金額" in fields else 4
-            except ValueError:
-                amt_col = 4
-
-            day_records = []
-            total_turnover = 0.0
-            for row in j["data"]:
-                if len(row) <= amt_col:
-                    continue
-                try:
-                    sector_raw = str(row[0]).strip()
-                    sector_clean = sector_raw.rstrip("類")
-                    sector_name = sector_clean if sector_clean in SECTOR_NAMES.values() else sector_raw
-                    turnover = float(str(row[amt_col]).replace(",", ""))
-                    total_turnover += turnover
-                    day_records.append({"date": dt, "sector_name": sector_name, "turnover": turnover})
-                except (ValueError, IndexError):
-                    continue
-
-            if total_turnover > 0:
-                for r in day_records:
-                    r["turnover_億"]        = round(r["turnover"] / 1e8, 2)
-                    r["turnover_share_pct"] = round(r["turnover"] / total_turnover * 100, 2)
-                records.extend(day_records)
-                collected += 1
-
-            time.sleep(0.3)
-
-        except Exception as e:
-            logger.warning("Sector turnover fetch error (%s): %s", date_str, e)
-
-    if not records:
-        return pd.DataFrame(columns=["date", "sector_name", "turnover_億", "turnover_share_pct"])
-
-    df = (pd.DataFrame(records)
-          [["date", "sector_name", "turnover_億", "turnover_share_pct"]]
-          .sort_values(["date", "sector_name"])
-          .reset_index(drop=True))
-    return df
+    logger.info("fetch_tw_sector_turnover: no TWSE JSON API for sector turnover; returning empty")
+    return pd.DataFrame(columns=["date", "sector_name", "turnover_億", "turnover_share_pct"])
 
 
 def calc_sector_momentum(sector_df: pd.DataFrame, weeks_short: int = 4, weeks_long: int = 12) -> pd.DataFrame:
@@ -274,14 +257,15 @@ def calc_sector_momentum(sector_df: pd.DataFrame, weeks_short: int = 4, weeks_lo
 
 def fetch_tw_sector_institutional(n_days: int = 5) -> pd.DataFrame:
     """
-    Fetch sector-level institutional net buy/sell from TWSE BFI82U.
+    Fetch overall market institutional net buy/sell from TWSE BFI82U.
 
-    BFI82U aggregates foreign + trust fund + dealer net positions by
-    industry category.  One row per (date, sector_name, institution_type).
+    BFI82U (selectType=ALLBUT0999) returns one row per institution type:
+      外資及陸資, 外資自營商, 投信, 自營商(自行買賣), 自營商(避險), 合計
+    Fields: [單位名稱, 買進金額, 賣出金額, 買賣差額]  (unit: NT$ thousand)
 
     Returns DataFrame with columns:
-      [date, sector_name, foreign_net, trust_net, dealer_net, total_net]
-    All net values in thousands of shares (千股).
+      [date, institution, buy_amt, sell_amt, net_amt]
+    All amounts in NT$ thousands.
 
     Falls back to empty DataFrame if TWSE API is unavailable.
     """
@@ -305,61 +289,26 @@ def fetch_tw_sector_institutional(n_days: int = 5) -> pd.DataFrame:
             if j.get("stat") != "OK" or not j.get("data"):
                 continue
 
-            fields = j.get("fields", [])
             dt = pd.Timestamp(date_str)
 
-            # Expected fields: 類別, 外資買進, 外資賣出, 外資淨買超, 投信買進, ... 自營商...
-            def _col(names: list[str]) -> int:
-                for name in names:
-                    for i, f in enumerate(fields):
-                        if name in f:
-                            return i
-                return -1
-
-            foreign_col = _col(["外資淨"])
-            trust_col   = _col(["投信淨"])
-            dealer_col  = _col(["自營商淨"])
-            # Fallback: sum buy-sell manually if net column absent
-            foreign_buy_col  = _col(["外資買進"])
-            foreign_sell_col = _col(["外資賣出"])
-            trust_buy_col    = _col(["投信買進"])
-            trust_sell_col   = _col(["投信賣出"])
-            dealer_buy_col   = _col(["自營商買進"])
-            dealer_sell_col  = _col(["自營商賣出"])
-
-            def _parse_val(row, col, buy_col=-1, sell_col=-1) -> float:
-                if col >= 0 and col < len(row):
-                    try:
-                        return float(str(row[col]).replace(",", "").replace("+", ""))
-                    except ValueError:
-                        pass
-                if buy_col >= 0 and sell_col >= 0:
-                    try:
-                        b = float(str(row[buy_col]).replace(",", ""))
-                        s = float(str(row[sell_col]).replace(",", ""))
-                        return b - s
-                    except ValueError:
-                        pass
-                return 0.0
+            def _parse_amt(val: str) -> float:
+                try:
+                    return float(str(val).replace(",", "").replace("+", ""))
+                except (ValueError, TypeError):
+                    return 0.0
 
             for row in j["data"]:
-                if len(row) < 2:
+                if len(row) < 4:
                     continue
-                sector_raw = str(row[0]).strip()
-                if not sector_raw or sector_raw in ("合計", "總計"):
+                institution = str(row[0]).strip()
+                if not institution or institution in ("合計", "總計"):
                     continue
-                # BFI82U returns numeric sector codes ("01", "14"); map to Chinese names
-                sector_name = SECTOR_NAMES.get(sector_raw, sector_raw)
-                f_net = _parse_val(row, foreign_col, foreign_buy_col, foreign_sell_col)
-                t_net = _parse_val(row, trust_col,   trust_buy_col,   trust_sell_col)
-                d_net = _parse_val(row, dealer_col,  dealer_buy_col,  dealer_sell_col)
                 records.append({
                     "date":        dt,
-                    "sector_name": sector_name,
-                    "foreign_net": f_net,
-                    "trust_net":   t_net,
-                    "dealer_net":  d_net,
-                    "total_net":   f_net + t_net + d_net,
+                    "institution": institution,
+                    "buy_amt":     _parse_amt(row[1]),
+                    "sell_amt":    _parse_amt(row[2]),
+                    "net_amt":     _parse_amt(row[3]),
                 })
             collected += 1
             time.sleep(0.3)
@@ -368,10 +317,9 @@ def fetch_tw_sector_institutional(n_days: int = 5) -> pd.DataFrame:
             logger.warning("BFI82U fetch error (%s): %s", date_str, e)
 
     if not records:
-        return pd.DataFrame(columns=["date", "sector_name",
-                                     "foreign_net", "trust_net", "dealer_net", "total_net"])
+        return pd.DataFrame(columns=["date", "institution", "buy_amt", "sell_amt", "net_amt"])
     return (pd.DataFrame(records)
-            .sort_values(["date", "sector_name"])
+            .sort_values(["date", "institution"])
             .reset_index(drop=True))
 
 

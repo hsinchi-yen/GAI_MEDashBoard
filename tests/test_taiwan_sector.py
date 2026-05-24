@@ -262,14 +262,18 @@ class TestSectorNames:
 
 
 # ── fetch_tw_sector_institutional ─────────────────────────────────────────────
+#
+# BFI82U (selectType=ALLBUT0999) returns institution-TYPE rows (not sector rows):
+#   fields: [單位名稱, 買進金額, 賣出金額, 買賣差額]
+#   rows:   ["外資及陸資", buy, sell, net], ["投信", ...], ["自營商", ...], ...
+#
+# The function columns are: [date, institution, buy_amt, sell_amt, net_amt]
 
 def _bfi82u_response(rows: list[list]) -> dict:
-    """Build a minimal BFI82U API JSON response."""
+    """Build a minimal BFI82U ALLBUT0999 API JSON response."""
     return {
         "stat": "OK",
-        "fields": ["類別", "外資買進", "外資賣出", "外資淨買超",
-                   "投信買進", "投信賣出", "投信淨買超",
-                   "自營商買進", "自營商賣出", "自營商淨買超"],
+        "fields": ["單位名稱", "買進金額", "賣出金額", "買賣差額"],
         "data": rows,
     }
 
@@ -290,40 +294,29 @@ class TestFetchTwSectorInstitutional:
             _mock_get(response_json, status),
         )
 
-    # ── numeric code → Chinese name mapping ────────────────────────────────────
+    # ── normal response parsing ────────────────────────────────────────────────
 
-    def test_sector_code_mapped_to_chinese_name(self):
-        """BFI82U returns numeric code "14"; should map to "電子"."""
+    def test_institution_name_stored_verbatim(self):
+        """Institution names come from BFI82U row[0] and are stored as-is."""
+        rows = [["外資及陸資", "1,000", "800", "200"]]
+        with self._patch_get(_bfi82u_response(rows)):
+            df = fetch_tw_sector_institutional(n_days=1)
+        assert not df.empty
+        assert df.iloc[0]["institution"] == "外資及陸資"
+
+    def test_all_institution_rows_captured(self):
+        """All non-合計 rows should appear in output."""
         rows = [
-            ["14", "1000", "800", "200", "100", "50", "50", "200", "100", "100"],
+            ["外資及陸資",          "5,000", "4,000", "1,000"],
+            ["外資自營商",          "200",   "150",   "50"],
+            ["投信",                "300",   "250",   "50"],
+            ["自營商(自行買賣)",    "400",   "380",   "20"],
+            ["自營商(避險)",        "100",   "90",    "10"],
         ]
         with self._patch_get(_bfi82u_response(rows)):
             df = fetch_tw_sector_institutional(n_days=1)
-        assert not df.empty
-        assert df.iloc[0]["sector_name"] == "電子"
-
-    def test_all_19_standard_codes_mapped(self):
-        """All codes in SECTOR_NAMES should be mapped correctly."""
-        rows = [
-            [code, "100", "80", "20", "10", "5", "5", "20", "10", "10"]
-            for code in SECTOR_NAMES
-        ]
-        with self._patch_get(_bfi82u_response(rows)):
-            df = fetch_tw_sector_institutional(n_days=1)
-        assert not df.empty
-        returned_names = set(df["sector_name"].unique())
-        expected_names = set(SECTOR_NAMES.values())
-        assert returned_names == expected_names, (
-            f"Missing: {expected_names - returned_names}"
-        )
-
-    def test_unknown_code_kept_as_is(self):
-        """Codes not in SECTOR_NAMES (e.g. '99') are kept verbatim."""
-        rows = [["99", "100", "80", "20", "10", "5", "5", "10", "5", "5"]]
-        with self._patch_get(_bfi82u_response(rows)):
-            df = fetch_tw_sector_institutional(n_days=1)
-        assert not df.empty
-        assert df.iloc[0]["sector_name"] == "99"
+        assert len(df) == 5
+        assert set(df["institution"]) == {r[0] for r in rows}
 
     # ── stat != OK → empty DataFrame ───────────────────────────────────────────
 
@@ -350,40 +343,38 @@ class TestFetchTwSectorInstitutional:
     # ── column format checks ───────────────────────────────────────────────────
 
     def test_returns_expected_columns(self):
-        rows = [["01", "500", "400", "100", "50", "40", "10", "100", "80", "20"]]
+        rows = [["外資及陸資", "500", "400", "100"]]
         with self._patch_get(_bfi82u_response(rows)):
             df = fetch_tw_sector_institutional(n_days=1)
-        assert list(df.columns) == ["date", "sector_name",
-                                    "foreign_net", "trust_net", "dealer_net", "total_net"]
+        assert list(df.columns) == ["date", "institution", "buy_amt", "sell_amt", "net_amt"]
 
     def test_date_column_is_timestamp(self):
-        rows = [["02", "200", "150", "50", "20", "15", "5", "40", "30", "10"]]
+        rows = [["投信", "200", "150", "50"]]
         with self._patch_get(_bfi82u_response(rows)):
             df = fetch_tw_sector_institutional(n_days=1)
         assert pd.api.types.is_datetime64_any_dtype(df["date"])
 
-    def test_net_columns_are_numeric(self):
-        rows = [["03", "300", "200", "100", "30", "20", "10", "60", "40", "20"]]
+    def test_amount_columns_are_numeric(self):
+        rows = [["自營商", "300", "200", "100"]]
         with self._patch_get(_bfi82u_response(rows)):
             df = fetch_tw_sector_institutional(n_days=1)
-        for col in ("foreign_net", "trust_net", "dealer_net", "total_net"):
+        for col in ("buy_amt", "sell_amt", "net_amt"):
             assert pd.api.types.is_float_dtype(df[col]), f"{col} is not float"
 
-    def test_total_net_equals_sum_of_three(self):
-        """total_net should equal foreign_net + trust_net + dealer_net."""
-        rows = [["14", "1000", "800", "200", "100", "50", "50", "200", "100", "100"]]
+    def test_comma_separated_numbers_parsed(self):
+        """Numbers with thousands separators (e.g. '1,234,567') should parse correctly."""
+        rows = [["外資及陸資", "1,234,567", "987,654", "246,913"]]
         with self._patch_get(_bfi82u_response(rows)):
             df = fetch_tw_sector_institutional(n_days=1)
-        row = df.iloc[0]
-        assert abs(row["total_net"] - (row["foreign_net"] + row["trust_net"] + row["dealer_net"])) < 1e-6
+        assert abs(df.iloc[0]["buy_amt"] - 1_234_567) < 1e-3
 
     def test_skip_total_row(self):
-        """Rows with sector_name '合計' or '總計' must be skipped."""
+        """Rows with institution '合計' or '總計' must be skipped."""
         rows = [
-            ["14", "100", "80", "20", "10", "5", "5", "20", "10", "10"],
-            ["合計", "999", "888", "111", "99", "88", "11", "199", "177", "22"],
+            ["外資及陸資", "100", "80", "20"],
+            ["合計",       "999", "888", "111"],
         ]
         with self._patch_get(_bfi82u_response(rows)):
             df = fetch_tw_sector_institutional(n_days=1)
         assert len(df) == 1
-        assert "合計" not in df["sector_name"].values
+        assert "合計" not in df["institution"].values

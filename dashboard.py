@@ -20,58 +20,60 @@ CACHE_TTL_DB = 86400      # 24 h — DB-backed loaders (data changes once per da
 
 # ── 13F 板塊分類對照表 ─────────────────────────────────────────────────────
 _SECTOR_MAP: dict[str, str] = {
-    # 科技
-    "MICROSOFT":     "科技",  "MSFT": "科技",
-    "APPLE":         "科技",  "AAPL": "科技",
-    "AMAZON":        "科技",  "AMZN": "科技",
-    "ALPHABET":      "科技",  "GOOGL": "科技", "GOOG": "科技",
-    "META":          "科技",  "META PLATFORMS": "科技",
-    "NETFLIX":       "科技",  "NFLX": "科技",
-    "SALESFORCE":    "科技",  "CRM": "科技",
-    "IBM":           "科技",
-    "SERVICENOW":    "科技",  "NOW": "科技",
+    # 科技（軟體 / 雲端 / 儲存）
+    "MICROSOFT":        "科技",  "MSFT": "科技",
+    "APPLE":            "科技",  "AAPL": "科技",
+    "AMAZON":           "科技",  "AMZN": "科技",
+    "ALPHABET":         "科技",  "GOOGL": "科技", "GOOG": "科技",
+    "META":             "科技",  "META PLATFORMS": "科技",
+    "NETFLIX":          "科技",  "NFLX": "科技",
+    "SALESFORCE":       "科技",
+    "IBM":              "科技",
+    "SERVICENOW":       "科技",
+    "WESTERN DIGITAL":  "科技",  "WDC": "科技",
+    "SANDISK":          "科技",
+    "SEAGATE":          "科技",  "STX": "科技",
     # 半導體
-    "NVIDIA":        "半導體", "NVDA": "半導體",
-    "TAIWAN SEMI":   "半導體", "TSM": "半導體", "TSMC": "半導體",
-    "BROADCOM":      "半導體", "AVGO": "半導體",
-    "LAM RESEARCH":  "半導體", "LRCX": "半導體",
-    "APPLIED MATER": "半導體", "AMAT": "半導體",
-    "QUALCOMM":      "半導體", "QCOM": "半導體",
-    "AMD":           "半導體", "ADVANCED MICRO": "半導體",
-    "INTEL":         "半導體", "INTC": "半導體",
-    "MICRON":        "半導體", "MU": "半導體",
-    "TEXAS INST":    "半導體", "TXN": "半導體",
-    # 金融
-    "JPMORGAN":      "金融",  "JPM": "金融",
-    "GOLDMAN":       "金融",  "GS": "金融",
-    "BERKSHIRE":     "金融",  "BRK": "金融",
-    "BROOKFIELD":    "金融",  "BAM": "金融",
-    "VISA":          "金融",  "V": "金融",
-    "MASTERCARD":    "金融",  "MA": "金融",
-    "BANK OF AMER":  "金融",  "BAC": "金融",
-    "CITIGROUP":     "金融",  "C": "金融",
+    "NVIDIA":           "半導體", "NVDA": "半導體",
+    "TAIWAN SEMI":      "半導體", "TSM": "半導體", "TSMC": "半導體",
+    "BROADCOM":         "半導體", "AVGO": "半導體",
+    "LAM RESEARCH":     "半導體", "LRCX": "半導體",
+    "APPLIED MATER":    "半導體", "AMAT": "半導體",
+    "QUALCOMM":         "半導體", "QCOM": "半導體",
+    "AMD":              "半導體", "ADVANCED MICRO": "半導體",
+    "INTEL":            "半導體", "INTC": "半導體",
+    "MICRON":           "半導體", "MU": "半導體",
+    "TEXAS INST":       "半導體", "TXN": "半導體",
+    # 金融（只保留完整公司名關鍵字；移除單字母/雙字母 ticker 避免誤判）
+    "JPMORGAN":         "金融",  "JPM": "金融",
+    "GOLDMAN":          "金融",
+    "BERKSHIRE":        "金融",  "BRK": "金融",
+    "BROOKFIELD":       "金融",
+    "VISA":             "金融",
+    "MASTERCARD":       "金融",
+    "BANK OF AMER":     "金融",  "BAC": "金融",
+    "CITIGROUP":        "金融",
     # 醫療
-    "ELI LILLY":     "醫療",  "LLY": "醫療",
-    "JOHNSON":       "醫療",  "JNJ": "醫療",
-    "UNITEDHEALTH":  "醫療",  "UNH": "醫療",
-    "ABBVIE":        "醫療",  "ABBV": "醫療",
-    "MERCK":         "醫療",  "MRK": "醫療",
+    "ELI LILLY":        "醫療",  "LLY": "醫療",
+    "JOHNSON":          "醫療",  "JNJ": "醫療",
+    "UNITEDHEALTH":     "醫療",  "UNH": "醫療",
+    "ABBVIE":           "醫療",  "ABBV": "醫療",
+    "MERCK":            "醫療",  "MRK": "醫療",
     # 消費
-    "WALMART":       "消費",  "WMT": "消費",
-    "COSTCO":        "消費",  "COST": "消費",
-    "AMAZON COM":    "消費",
-    "COUPANG":       "消費",  "CPNG": "消費",
-    "TESLA":         "消費",  "TSLA": "消費",
-    "HOME DEPOT":    "消費",  "HD": "消費",
-    "PROCTER":       "消費",  "PG": "消費",
-    "COCA-COLA":     "消費",  "KO": "消費",
-    "PEPSICO":       "消費",  "PEP": "消費",
+    "WALMART":          "消費",  "WMT": "消費",
+    "COSTCO":           "消費",  "COST": "消費",
+    "COUPANG":          "消費",  "CPNG": "消費",
+    "TESLA":            "消費",  "TSLA": "消費",
+    "HOME DEPOT":       "消費",
+    "PROCTER":          "消費",
+    "COCA-COLA":        "消費",
+    "PEPSICO":          "消費",
     # 能源/工業
-    "CHEVRON":       "能源",  "CVX": "能源",
-    "EXXON":         "能源",  "XOM": "能源",
-    "LINDE":         "工業",  "LIN": "工業",
-    "GE":            "工業",  "GENERAL ELECTRIC": "工業",
-    "CATERPILLAR":   "工業",  "CAT": "工業",
+    "CHEVRON":          "能源",  "CVX": "能源",
+    "EXXON":            "能源",  "XOM": "能源",
+    "LINDE":            "工業",
+    "GENERAL ELECTRIC": "工業",
+    "CATERPILLAR":      "工業",
 }
 
 _SECTOR_COLOR: dict[str, str] = {
@@ -2255,32 +2257,31 @@ with tab_f:
             else:
                 st.info("熱力圖需要 sector_df 包含 chg_pct 欄位，目前資料尚未就緒。")
 
-            # ── 法人類股買超（5日彙計）────────────────────────────────────────
+            # ── 三大法人整體市場買賣超 ──────────────────────────────────────
             st.markdown("---")
-            st.markdown("#### 🏛️ 三大法人各類股 5 日淨買超（千股）")
-            st.caption("外資 + 投信 + 自營商合計。正值＝淨買，負值＝淨賣。")
-            if not instit_df.empty and "total_net" in instit_df.columns:
-                _instit_agg = (
-                    instit_df.groupby("sector_name")[["foreign_net", "trust_net",
-                                                       "dealer_net", "total_net"]]
-                    .sum()
-                    .reset_index()
-                    .sort_values("total_net", ascending=False)
+            st.markdown("#### 🏛️ 三大法人整體市場淨買超（NT$ 千元）")
+            st.caption("TWSE BFI82U：外資、投信、自營商整體市場買賣差額。正值＝淨買，負值＝淨賣。")
+            if not instit_df.empty and "institution" in instit_df.columns:
+                # Most recent trading day
+                _latest_instit = (
+                    instit_df[instit_df["date"] == instit_df["date"].max()]
+                    .sort_values("net_amt", ascending=False)
+                    [["institution", "buy_amt", "sell_amt", "net_amt"]]
+                    .reset_index(drop=True)
                 )
-                _instit_agg.columns = ["類股", "外資淨買超", "投信淨買超", "自營商淨買超", "合計"]
-                # Colour bar based on total
-                _max_abs = _instit_agg["合計"].abs().max() or 1
+                _latest_instit.columns = ["法人", "買進（千元）", "賣出（千元）", "淨買超（千元）"]
+                _max_abs = _latest_instit["淨買超（千元）"].abs().max() or 1
                 st.dataframe(
-                    _instit_agg.style.background_gradient(
-                        subset=["合計"], cmap="RdYlGn",
+                    _latest_instit.style.background_gradient(
+                        subset=["淨買超（千元）"], cmap="RdYlGn",
                         vmin=-_max_abs, vmax=_max_abs,
-                    ).format({"外資淨買超": "{:,.0f}", "投信淨買超": "{:,.0f}",
-                               "自營商淨買超": "{:,.0f}", "合計": "{:,.0f}"}),
-                    width='stretch', height=400,
+                    ).format({"買進（千元）": "{:,.0f}", "賣出（千元）": "{:,.0f}",
+                               "淨買超（千元）": "{:,.0f}"}),
+                    width='stretch',
                 )
             else:
                 st.info(
-                    "法人類股買超資料尚未就緒。\n\n"
+                    "法人買超資料尚未就緒。\n\n"
                     "首次啟動請執行：`docker exec macro-dashboard python scheduler.py --run-now`\n\n"
                     "每日 02:30（台北時間）自動更新。"
                 )
