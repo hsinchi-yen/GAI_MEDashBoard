@@ -465,12 +465,12 @@ with st.sidebar:
     )
     col_save, col_clear = st.columns(2)
     with col_save:
-        if st.button("💾 儲存", use_container_width=True):
+        if st.button("💾 儲存", width='stretch'):
             _safe = input_key.replace("\\", "\\\\").replace("'", "\\'")
             st_javascript(f"localStorage.setItem('FRED_API_KEY', '{_safe}'); 1")
             st.success("已儲存至瀏覽器")
     with col_clear:
-        if st.button("🗑️ 清除", use_container_width=True):
+        if st.button("🗑️ 清除", width='stretch'):
             st_javascript("localStorage.removeItem('FRED_API_KEY'); 1")
             st.info("已清除")
 
@@ -1739,13 +1739,13 @@ with tab_d:
             if not _tw_buy.empty:
                 st.plotly_chart(
                     _tw_bar(_tw_buy, "📈 三大法人 Top 10 買超", "rgba(38,166,91,0.82)"),
-                    use_container_width=True, key="fig_tw_buy10",
+                    width='stretch', key="fig_tw_buy10",
                 )
         with _tw_bar_col2:
             if not _tw_sell.empty:
                 st.plotly_chart(
                     _tw_bar(_tw_sell, "📉 三大法人 Top 10 賣超", "rgba(234,57,67,0.82)"),
-                    use_container_width=True, key="fig_tw_sell10",
+                    width='stretch', key="fig_tw_sell10",
                 )
 
         # ── Top 30 明細表 ──
@@ -1770,11 +1770,11 @@ with tab_d:
         with _tw_tbl_col1:
             st.markdown("**📈 前 30 大買超明細**")
             if not _tw_buy.empty:
-                st.dataframe(_tw_fmt_table(_tw_buy), use_container_width=True, height=520)
+                st.dataframe(_tw_fmt_table(_tw_buy), width='stretch', height=520)
         with _tw_tbl_col2:
             st.markdown("**📉 前 30 大賣超明細**")
             if not _tw_sell.empty:
-                st.dataframe(_tw_fmt_table(_tw_sell), use_container_width=True, height=520)
+                st.dataframe(_tw_fmt_table(_tw_sell), width='stretch', height=520)
     else:
         st.warning("無法載入三大法人買賣超資料，請點選「更新法人資料」重試。")
 
@@ -2178,7 +2178,7 @@ with tab_f:
                     font_color="#ddd", margin=dict(l=40, r=20, t=20, b=40),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 )
-                st.plotly_chart(fig_snap, use_container_width=True, key="fig_f_snap")
+                st.plotly_chart(fig_snap, width='stretch', key="fig_f_snap")
 
                 # 退潮→候選對照表
                 if signals.get("cooling") and signals.get("warming"):
@@ -2251,7 +2251,7 @@ with tab_f:
                     xaxis=dict(side="top"),
                     margin=dict(l=100, r=20, t=60, b=20),
                 )
-                st.plotly_chart(fig_heat, use_container_width=True, key="fig_f_heat")
+                st.plotly_chart(fig_heat, width='stretch', key="fig_f_heat")
             else:
                 st.info("熱力圖需要 sector_df 包含 chg_pct 欄位，目前資料尚未就緒。")
 
@@ -2276,7 +2276,7 @@ with tab_f:
                         vmin=-_max_abs, vmax=_max_abs,
                     ).format({"外資淨買超": "{:,.0f}", "投信淨買超": "{:,.0f}",
                                "自營商淨買超": "{:,.0f}", "合計": "{:,.0f}"}),
-                    use_container_width=True, height=400,
+                    width='stretch', height=400,
                 )
             else:
                 st.info(
@@ -2327,7 +2327,7 @@ with tab_f:
                     margin=dict(l=40, r=20, t=30, b=40),
                     hovermode="x unified",
                 )
-                st.plotly_chart(fig_flow, use_container_width=True, key="fig_f_flow")
+                st.plotly_chart(fig_flow, width='stretch', key="fig_f_flow")
 
                 # 最新一日排行
                 _latest_date = turnover_df["date"].max()
@@ -2343,7 +2343,7 @@ with tab_f:
                     .reset_index(drop=True)
                 )
                 st.markdown(f"**最新交易日（{_latest_date.strftime('%Y-%m-%d')}）類股成交排行**")
-                st.dataframe(_latest, use_container_width=True, height=360)
+                st.dataframe(_latest, width='stretch', height=360)
             else:
                 st.info(
                     "成交值資料載入中，請稍後重整頁面。\n\n"
@@ -2527,7 +2527,7 @@ with tab_f:
                         max_val = float(_rank_df["淨增持（$M）"].abs().max()) if len(_rank_df) > 0 else 1000.0
                         st.dataframe(
                             _rank_df,
-                            use_container_width=True,
+                            width='stretch',
                             hide_index=True,
                             column_config={
                                 "排名":        st.column_config.NumberColumn(width="small"),
