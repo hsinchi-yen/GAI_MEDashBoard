@@ -181,7 +181,7 @@ def fetch_13f_smart_money(n_top: int = 20) -> dict:
                    for name, cik in _13F_MAJOR_FUNDS.items()}
         for future in as_completed(futures):
             try:
-                _, delta, rd = future.result()
+                delta, rd = future.result()
                 if not delta:
                     continue
                 fund_count += 1
