@@ -2330,12 +2330,14 @@ with tab_f:
 
             # ── 三大法人整體市場買賣超 ──────────────────────────────────────
             st.markdown("---")
-            st.markdown("#### 🏛️ 三大法人整體市場淨買超（NT$ 千元）")
-            st.caption("TWSE BFI82U：外資、投信、自營商整體市場買賣差額。正值＝淨買，負值＝淨賣。")
             if not instit_df.empty and "institution" in instit_df.columns:
+                _data_date = instit_df["date"].max()
+                _data_date_str = pd.Timestamp(_data_date).strftime("%Y-%m-%d")
+                st.markdown(f"#### 🏛️ 三大法人整體市場淨買超（NT$ 千元）　<span style='font-size:0.75em;color:#888;font-weight:normal;'>資料日期：{_data_date_str}</span>", unsafe_allow_html=True)
+                st.caption("TWSE BFI82U：外資、投信、自營商整體市場買賣差額。正值＝淨買，負值＝淨賣。")
                 # Most recent trading day
                 _latest_instit = (
-                    instit_df[instit_df["date"] == instit_df["date"].max()]
+                    instit_df[instit_df["date"] == _data_date]
                     .sort_values("net_amt", ascending=False)
                     [["institution", "buy_amt", "sell_amt", "net_amt"]]
                     .reset_index(drop=True)
@@ -2351,6 +2353,7 @@ with tab_f:
                     width='stretch',
                 )
             else:
+                st.markdown("#### 🏛️ 三大法人整體市場淨買超（NT$ 千元）")
                 st.info(
                     "法人買超資料尚未就緒。\n\n"
                     "首次啟動請執行：`docker exec macro-dashboard python scheduler.py --run-now`\n\n"
