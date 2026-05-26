@@ -188,15 +188,18 @@ class TestSimpleTs:
     def test_read_returns_none_when_key_missing(self):
         assert db_manager.read("__does_not_exist__") is None
 
-    def test_read_returns_none_when_ttl_expired(self):
+    def test_read_serves_stale_after_ttl_expired(self):
+        """Stale-while-revalidate: read() returns the latest stored value even
+        after the TTL has lapsed. TTL governs re-fetch, not read usability."""
         df = _simple_df(2)
         db_manager.write("ts_exp", df, ttl_days=1, initial=True)
-        # Mock time to be 2 days in the future
         future = int(time.time()) + 2 * 86400 + 10
         with patch.object(db_manager, "_today_day", return_value=future // 86400):
             with patch("time.time", return_value=float(future)):
                 r = db_manager.read("ts_exp")
-        assert r is None
+                assert r is not None and not r.empty
+                assert db_manager.is_stale("ts_exp") is True
+                assert db_manager.is_fresh("ts_exp") is False
 
 
 # ── Grouped time-series write / read ─────────────────────────────────────────
@@ -290,13 +293,15 @@ class TestBlobCache:
         r = db_manager.read("blob_replace")
         assert len(r) == 1
 
-    def test_blob_read_returns_none_when_expired(self):
+    def test_blob_read_serves_stale_after_expired(self):
+        """Blob snapshots also serve-stale: the cached payload is returned past TTL."""
         df = self._complex_df()
         db_manager.write("blob_exp", df, ttl_days=1)
         future = int(time.time()) + 2 * 86400 + 10
         with patch("time.time", return_value=float(future)):
             r = db_manager.read("blob_exp")
-        assert r is None
+            assert r is not None and not r.empty
+            assert db_manager.is_stale("blob_exp") is True
 
 
 # ── is_fresh / list_keys ──────────────────────────────────────────────────────
@@ -365,3 +370,36 @@ class TestTrimToWindow:
 
     def test_trim_returns_count(self):
         assert isinstance(db_manager.trim_to_window(years=15), int)
+
+
+# ── New helpers: is_stale / max_date / purge_test_keys ───────────────────────
+
+class TestStaleAndMaxDate:
+    def test_max_date_returns_latest(self):
+        df = _simple_df(5, start="2024-03-01")  # last date 2024-03-05
+        db_manager.write("md", df, initial=True)
+        md = db_manager.max_date("md")
+        assert md is not None
+        assert md == pd.Timestamp("2024-03-05")
+
+    def test_max_date_none_when_missing(self):
+        assert db_manager.max_date("__nope__") is None
+
+    def test_is_stale_true_when_missing(self):
+        assert db_manager.is_stale("__nope__") is True
+
+    def test_is_stale_false_when_fresh(self):
+        db_manager.write("fresh_key", _simple_df(3), ttl_days=3, initial=True)
+        assert db_manager.is_stale("fresh_key") is False
+
+
+class TestPurgeTestKeys:
+    def test_purge_removes_underscore_keys_only(self):
+        db_manager.write("_tmp", _simple_df(3), initial=True)
+        db_manager.write("real", _simple_df(3), initial=True)
+        db_manager.purge_test_keys()
+        assert db_manager.read("_tmp") is None
+        assert db_manager.read("real") is not None
+        keys = {k["key"] for k in db_manager.list_keys()}
+        assert "_tmp" not in keys
+        assert "real" in keys

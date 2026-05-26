@@ -349,6 +349,7 @@ def job_monthly_maintenance() -> None:
     3. Remove expired blob_cache rows.
     """
     logger.info("=== monthly maintenance ===")
+    db_manager.purge_test_keys()
     trimmed = db_manager.trim_to_window(years=db_manager.HISTORY_YEARS)
     db_manager.checkpoint()
     expired = db_manager.cleanup_expired()

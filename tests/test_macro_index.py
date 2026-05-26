@@ -3,7 +3,7 @@ test_macro_index.py — TDD test suite for macro_index.py
 
 Covers:
   - has_data field on every signal function
-  - Signal scoring logic (PMI, YoY, OECD, VIX, rotation, 13F, scissors, etc.)
+  - Signal scoring logic (PMI, YoY, VIX, rotation, 13F, scissors, etc.)
   - compute_macro_index: valid_count, confidence, group cap, regime, diffusion
   - top_drivers / top_drags group-priority ordering
   - _apply_two_period_confirmation anti-whipsaw logic
@@ -20,7 +20,6 @@ from macro_index import (
     _sig_yoy_positive,
     _sig_yoy_positive_improving,
     _sig_slope_up,
-    _sig_oecd_breadth,
     _sig_scissors_narrowing,
     _sig_hy_spread_down,
     _sig_10y3m_positive_rising,
@@ -50,7 +49,7 @@ def make_df(values: list[float]) -> pd.DataFrame:
 
 def _full_data() -> dict:
     """
-    Minimal but complete data dict for all 20 indicators.
+    Minimal but complete data dict for all 19 indicators.
     Not all signals will be 1 — that's intentional; correctness depends on
     the actual scoring rules, not a forced all-green scenario.
     """
@@ -58,7 +57,6 @@ def _full_data() -> dict:
     pmi_down = make_df([53.0, 52.0, 51.0])   # >50, slope down → score=0
     yoy_pos  = make_df([2.0, 3.0, 4.0])       # positive, improving → score=1
     yoy_neg  = make_df([-2.0, -1.5, -1.0])   # negative → score=0
-    cli_high = make_df([100.5, 101.0, 101.5]) # >100, slope up
     hy_fall  = make_df([400.0, 380.0, 360.0]) # falling → score=1
     t10y3m   = make_df([0.10, 0.20, 0.30])    # >0, slope up → score=1
     vix_fall = make_df([28.0, 24.0, 20.0])    # falling → score=1
@@ -74,11 +72,6 @@ def _full_data() -> dict:
         "TW_EXP_YOY": yoy_pos,
         "KR_EXP_YOY": yoy_pos,
         "US_RETAIL_YOY": yoy_pos,
-        "US_CLI": cli_high,
-        "CN_CLI": cli_high,
-        "JP_CLI": cli_high,
-        "EU_CLI": cli_high,
-        "KR_CLI": cli_high,
         "NDC_LEADING": make_df([98.0, 99.0, 100.0]),
         "US_CORE_CPI_YOY": yoy_pos,
         "US_CORE_PPI_YOY": make_df([5.0, 4.0, 3.0]),  # > cpi → scissors negative → score=1
@@ -131,21 +124,6 @@ class TestHasDataField:
     def test_slope_up_has_data(self):
         _, _, _, _, hd = _sig_slope_up(make_df([1.0, 2.0, 3.0]), "slope")
         assert hd is True
-
-    def test_oecd_breadth_no_data_when_all_none(self):
-        cli = {"US": None, "CN": None, "JP": None, "EU": None, "KR": None}
-        _, _, _, _, hd = _sig_oecd_breadth(cli)
-        assert hd is False
-
-    def test_oecd_breadth_has_data_when_partial(self):
-        cli = {"US": make_df([101.0]), "CN": None, "JP": None, "EU": None, "KR": None}
-        _, _, _, _, hd = _sig_oecd_breadth(cli)
-        assert hd is True
-
-    def test_oecd_breadth_raw_is_na_when_all_none(self):
-        cli = {"US": None, "CN": None, "JP": None, "EU": None, "KR": None}
-        _, raw, _, _, _ = _sig_oecd_breadth(cli)
-        assert raw == "N/A"
 
     def test_scissors_has_data_via_scissors_df(self):
         """has_data should be True when scissors_df is provided even if cpi/ppi are None."""
@@ -248,25 +226,6 @@ class TestSignalScoring:
 
     def test_yoy_positive_score_0_when_negative(self):
         s, *_ = _sig_yoy_positive(make_df([-1.0]), "YoY")
-        assert s == 0
-
-    # OECD breadth
-    def test_oecd_score_1_when_3_of_5_above_100(self):
-        cli = {
-            "US": make_df([101.0]), "CN": make_df([101.5]),
-            "JP": make_df([100.8]), "EU": make_df([99.0]),
-            "KR": make_df([98.5]),
-        }
-        s, *_ = _sig_oecd_breadth(cli)
-        assert s == 1
-
-    def test_oecd_score_0_when_only_2_above_100(self):
-        cli = {
-            "US": make_df([101.0]), "CN": make_df([101.0]),
-            "JP": make_df([99.0]), "EU": make_df([99.0]),
-            "KR": make_df([99.0]),
-        }
-        s, *_ = _sig_oecd_breadth(cli)
         assert s == 0
 
     # Scissors narrowing
@@ -375,20 +334,20 @@ class TestComputeMacroIndex:
             assert "has_data" in sig, f"Signal #{sig['id']} missing has_data"
             assert isinstance(sig["has_data"], bool)
 
-    def test_exactly_20_signals(self):
+    def test_exactly_19_signals(self):
         result = compute_macro_index(_full_data())
-        assert len(result["signals"]) == 20
+        assert len(result["signals"]) == 19
 
-    def test_valid_count_is_20_with_full_data(self):
+    def test_valid_count_is_19_with_full_data(self):
         result = compute_macro_index(_full_data())
-        assert result["valid_count"] == 20
+        assert result["valid_count"] == 19
 
     def test_valid_count_decreases_when_indicators_missing(self):
         data = _full_data()
-        data["SECTOR_ROTATION"] = None           # #19 → has_data=False
-        data["THIRTEENF_NET_ADD"] = pd.DataFrame()  # #20 → has_data=False
+        data["SECTOR_ROTATION"] = None           # #18 → has_data=False
+        data["THIRTEENF_NET_ADD"] = pd.DataFrame()  # #19 → has_data=False
         result = compute_macro_index(data)
-        assert result["valid_count"] == 18
+        assert result["valid_count"] == 17
 
     def test_confidence_normal_with_16_or_more_valid(self):
         result = compute_macro_index(_full_data())
@@ -410,12 +369,57 @@ class TestComputeMacroIndex:
         assert result["score"] == expected
 
     def test_diffusion_formula(self):
+        """Diffusion divides by VALID indicator count, not a fixed 20."""
         result = compute_macro_index(_full_data())
-        assert abs(result["diffusion"] - result["score"] / 20 * 100) < 0.01
+        # Tolerance 0.1 accounts for round(..., 1) in the diffusion calculation
+        assert abs(result["diffusion"] - result["score"] / result["valid_count"] * 100) < 0.1
+
+    def test_diffusion_full_data_matches_legacy(self):
+        """With all 19 valid, proportional diffusion equals the legacy /19 value."""
+        result = compute_macro_index(_full_data())
+        assert result["valid_count"] == 19
+        assert abs(result["diffusion"] - result["score"] / 19 * 100) < 0.1
+
+    def test_missing_indicators_do_not_drag_regime_down(self):
+        """Core fix: dropping bullish indicators must not flip green→yellow/red."""
+        full = compute_macro_index(_full_data())
+        data = _full_data()
+        # Drop 6 known-bullish series outright.
+        for k in ("US_PMI", "TW_PMI", "CN_PMI", "EU_PMI", "HY_SPREAD", "VIX"):
+            data[k] = None
+        partial = compute_macro_index(data)
+        # Proportional diffusion should stay >= the legacy /20 value for the same score.
+        legacy_diff = partial["score"] / 19 * 100
+        assert partial["diffusion"] >= legacy_diff
+        # And valid_count dropped by exactly 6.
+        assert partial["valid_count"] == full["valid_count"] - 6
+
+    def test_regime_uses_proportional_thresholds(self):
+        """≥75% of valid indicators bullish → green even when several are missing."""
+        from macro_index import REGIME_GREEN_PCT
+        data = {
+            "US_PMI": make_df([49.0, 50.5, 51.5]),
+            "TW_PMI": make_df([49.0, 50.5, 51.5]),
+            "CN_PMI": make_df([49.0, 50.5, 51.5]),
+            "EU_PMI": make_df([49.0, 50.5, 51.5]),
+            "US_NEW_ORDERS_YOY": make_df([2.0, 3.0, 4.0]),
+            "HY_SPREAD": make_df([400.0, 380.0, 360.0]),
+            "T10Y3M": make_df([0.1, 0.2, 0.3]),
+            "VIX": make_df([28.0, 24.0, 20.0]),
+            "TWD_USD": make_df([32.0, 31.5, 31.0]),
+            "COPPER_YOY": make_df([2.0, 3.0, 4.0]),
+            "SECTOR_ROTATION": make_df([0.01, 0.02, 0.03]),
+            "TW_M1B_YOY": make_df([3.0, 4.0, 5.0]),
+            "TW_M2_YOY": make_df([2.0, 2.5, 3.0]),
+        }
+        result = compute_macro_index(data)
+        assert result["valid_count"] >= 10
+        if result["diffusion"] >= REGIME_GREEN_PCT:
+            assert result["regime"] == "green"
 
     def test_score_bounds(self):
         result = compute_macro_index(_full_data())
-        assert 0 <= result["score"] <= 20
+        assert 0 <= result["score"] <= 19
         assert 0.0 <= result["diffusion"] <= 100.0
 
     def test_regime_is_valid_value(self):

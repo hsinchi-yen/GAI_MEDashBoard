@@ -27,11 +27,20 @@ from datetime import datetime
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-REGIME_GREEN  = 15   # Score >= this → Green (Expansion)
-REGIME_RED    = 9    # Score <= this → Red (Contraction)
+REGIME_GREEN  = 15   # (legacy, absolute) Score >= this → Green
+REGIME_RED    = 9    # (legacy, absolute) Score <= this → Red
 MIN_VALID     = 16   # Below this → Low Confidence flag
+MIN_REGIME    = 10   # Below this many valid indicators → regime 'unknown'
 SLOPE_MONTHS  = 3    # Window used for "3M slope" calculations
 GROUP_CAP     = 5    # Max effective score per group
+
+# Regime is decided on the diffusion *ratio* (valid positives / valid indicators),
+# NOT an absolute count. This stops missing indicators from being counted as
+# bearish: an indicator with no data is excluded from the denominator entirely.
+# When all 20 indicators are present these thresholds reproduce the old absolute
+# cut-offs exactly (15/20 = 75 %, 9/20 = 45 %).
+REGIME_GREEN_PCT = 75.0   # diffusion >= this → Green (Expansion)
+REGIME_RED_PCT   = 45.0   # diffusion <= this → Red (Contraction)
 
 REGIME_LABELS = {
     "green":  "🟢 擴張 (Expansion)",
@@ -139,30 +148,6 @@ def _sig_slope_up(df: pd.DataFrame, name: str):
     rule = "3M 斜率向上"
     return _score(cond), raw, rule, name, v is not None
 
-
-def _sig_oecd_breadth(cli_dict: dict):
-    """
-    OECD CLI breadth: number of economies with CLI > 100.
-    cli_dict keys: 'US', 'CN', 'JP', 'EU', 'KR'
-    Signal = 1 if >= 3 of 5 are above 100.
-    """
-    count = 0
-    valid = 0
-    details = []
-    for key, df in cli_dict.items():
-        v = _latest(df)
-        if v is not None:
-            valid += 1
-            above = v > 100
-            details.append(f"{key}:{v:.1f}{'✓' if above else '✗'}")
-            if above:
-                count += 1
-    if valid == 0:
-        return 0, "N/A", "≥3/5 國家 CLI>100", "OECD CLI 廣度", False
-    cond = count >= 3
-    raw  = f"{count}/5 ({', '.join(details)})"
-    rule = "≥3/5 國家 CLI>100"
-    return _score(cond), raw, rule, "OECD CLI 廣度", True
 
 
 def _sig_scissors_narrowing(cpi_yoy_df, ppi_yoy_df, scissors_df=None):
@@ -425,11 +410,7 @@ def compute_macro_index(data: dict) -> dict:
     _add("B", 6,  _sig_yoy_positive_improving(data.get("TW_EXP_YOY"), "台灣出口 YoY"))
     _add("B", 7,  _sig_yoy_positive_improving(data.get("KR_EXP_YOY"), "韓國出口 YoY"))
     _add("B", 8,  _sig_yoy_positive(data.get("US_RETAIL_YOY"), "美國零售銷售 YoY"))
-    _add("B", 9,  _sig_oecd_breadth({
-        "US": data.get("US_CLI"), "CN": data.get("CN_CLI"),
-        "JP": data.get("JP_CLI"), "EU": data.get("EU_CLI"), "KR": data.get("KR_CLI"),
-    }))
-    _add("B", 10, _sig_slope_up(data.get("NDC_LEADING"), "NDC 景氣領先指標"))
+    _add("B", 9,  _sig_slope_up(data.get("NDC_LEADING"), "NDC 景氣領先指標"))
 
     # ── Group C: Cost, Liquidity, Financial Conditions ────────────────────────
     _add("C", 11, _sig_scissors_narrowing(
@@ -464,17 +445,21 @@ def compute_macro_index(data: dict) -> dict:
     valid_count = sum(1 for sig in signals if sig["has_data"])
     confidence  = "normal" if valid_count >= MIN_VALID else "low"
 
-    # ── Regime ────────────────────────────────────────────────────────────────
-    if valid_count < 10:
+    # ── Diffusion (ratio over VALID indicators, not a fixed /20) ───────────────
+    # Indicators without data are excluded from the denominator so that a missing
+    # series neither helps nor hurts the score. total_score already counts only
+    # positives (missing/false both contribute 0), so it is the valid-positive sum.
+    diffusion = round(total_score / valid_count * 100, 1) if valid_count else 0.0
+
+    # ── Regime (proportional thresholds) ───────────────────────────────────────
+    if valid_count < MIN_REGIME:
         regime = "unknown"
-    elif total_score >= REGIME_GREEN:
+    elif diffusion >= REGIME_GREEN_PCT:
         regime = "green"
-    elif total_score <= REGIME_RED:
+    elif diffusion <= REGIME_RED_PCT:
         regime = "red"
     else:
         regime = "yellow"
-
-    diffusion = round(total_score / 20 * 100, 1)
 
     # ── Drivers and drags ─────────────────────────────────────────────────────
     # Prioritise leading-indicator groups (A first, then B, C, D) so the most

@@ -17,6 +17,7 @@ st.set_page_config(page_title="全球經濟指標儀表板", layout="wide", page
 # load_data() (live-fetch fallback) keeps this as its own TTL.
 CACHE_TTL    = 3600       # 1 h — live-fetch fallback only
 CACHE_TTL_DB = 86400      # 24 h — DB-backed loaders (data changes once per day)
+_MIN_REAL_DB_KEYS = 10    # below this many real keys → fall back to live fetch
 
 # ── 13F 板塊分類對照表 ─────────────────────────────────────────────────────
 _SECTOR_MAP: dict[str, str] = {
@@ -259,10 +260,14 @@ def load_all_from_db(fred_key: str) -> dict:
     Year-range filtering is done by filt() after this returns, so
     switching the sidebar selector costs zero fetch time.
 
-    Falls back to load_data(fred_key) if the DB has no entries at all
-    (e.g. first launch before scheduler has run).
+    Falls back to load_data(fred_key) when the DB holds too few *real* indicator
+    keys to be useful (e.g. first launch before scheduler has run, or a DB that
+    only contains leftover test keys). Keys beginning with '_' are treated as
+    test/auxiliary and never count toward this threshold.
     """
-    if not db_manager.list_keys():
+    _real_keys = [k for k in db_manager.list_keys()
+                  if not str(k.get("key", "")).startswith("_")]
+    if len(_real_keys) < _MIN_REAL_DB_KEYS:
         return load_data(fred_key)
 
     R = db_manager.read  # shorthand
@@ -594,10 +599,21 @@ if _twpmi: _bparts.append(f"🇹🇼PMI <b>{_twpmi:.1f}</b>")
 if _uspmi: _bparts.append(f"🇺🇸PMI <b>{_uspmi:.1f}</b>")
 if _cu:    _bparts.append(f"銅YoY <b>{_cu:+.1f}%</b>")
 
+# 低信心時降低橫幅燈號的視覺權重，並標示有效指標不足
+_lowconf = gmi["confidence"] == "low"
+if _lowconf:
+    _rstyle += " opacity:0.7;"
+_conf_badge = (
+    f'&nbsp;&nbsp;<span style="font-size:0.8em; color:#ffb347; font-weight:bold;">'
+    f'⚠️ 低信心 ({gmi["valid_count"]}/20 指標)</span>'
+    if _lowconf else ""
+)
+
 st.markdown(
     f'<div style="{_rstyle} border-radius:10px; padding:10px 18px; margin-bottom:4px;">'
     f'<span style="font-size:1.1em; font-weight:bold;">{gmi["regime_label"]}</span>'
-    f'&nbsp;&nbsp;GMI <b>{gmi["score"]}/20</b>&nbsp; 擴散 <b>{gmi["diffusion"]:.1f}%</b>'
+    f'&nbsp;&nbsp;GMI <b>{gmi["score"]}/{gmi["valid_count"]}</b>&nbsp; 擴散 <b>{gmi["diffusion"]:.1f}%</b>'
+    f'{_conf_badge}'
     f'&nbsp;&nbsp;<span style="opacity:0.4">|</span>&nbsp;&nbsp;'
     f'<span style="font-size:0.85em;">{"　".join(_bparts)}</span>'
     f'&nbsp;&nbsp;<span style="font-size:0.75em; opacity:0.55; float:right;">DB · 每日更新</span>'
@@ -624,7 +640,7 @@ with st.sidebar:
         f'</div>',
         unsafe_allow_html=True,
     )
-    st.caption(f"GMI {gmi['score']}/20 · 擴散 {gmi['diffusion']:.0f}% · 信心 {gmi['confidence']}")
+    st.caption(f"GMI {gmi['score']}/{gmi['valid_count']} · 擴散 {gmi['diffusion']:.0f}% · 信心 {gmi['confidence']}")
     st.markdown("---")
 
 # ════════════════════════════════════════════════════════
@@ -656,7 +672,7 @@ with tab_ov:
             f'border-radius:12px; padding:16px; text-align:center;">'
             f'<div style="font-size:2.2em; margin-bottom:2px">{gmi["regime_label"].split()[0]}</div>'
             f'<div style="font-weight:bold; font-size:1em;">{" ".join(gmi["regime_label"].split()[1:])}</div>'
-            f'<div style="font-size:0.9em; margin-top:10px;">GMI&nbsp;<b>{gmi["score"]}/20</b></div>'
+            f'<div style="font-size:0.9em; margin-top:10px;">GMI&nbsp;<b>{gmi["score"]}/{gmi["valid_count"]}</b></div>'
             f'<div style="font-size:0.8em; opacity:0.75;">擴散 {gmi["diffusion"]:.1f}%</div>'
             f'<div style="font-size:0.75em; opacity:0.6;">{gmi["confidence"]} 信心</div>'
             f'</div>',
@@ -1874,12 +1890,14 @@ with tab_e:
     with k1:
         st.markdown(f'<div style="{style}"><h3 style="margin:0;text-align:center">{display_label}</h3><p style="margin:0;text-align:center;font-size:0.9em">景氣燈號（兩期確認）</p></div>', unsafe_allow_html=True)
     with k2:
-        st.metric("📊 GMI 分數", f"{gmi['score']} / 20")
+        st.metric("📊 GMI 分數", f"{gmi['score']} / {gmi['valid_count']}",
+                  help="分子為看多指標數，分母為有效指標數（缺資料的指標不計入）")
     with k3:
-        st.metric("📈 擴散比例", f"{gmi['diffusion']:.1f}%")
+        st.metric("📈 擴散比例", f"{gmi['diffusion']:.1f}%",
+                  help="看多指標 ÷ 有效指標。Green≥75% · Red≤45%")
     with k4:
         conf_label = "🔵 正常" if gmi["confidence"] == "normal" else "🟠 低信心"
-        st.metric("信心等級", conf_label, help=f"有效指標數：{gmi['valid_count']}/20")
+        st.metric("信心等級", conf_label, help=f"有效指標數：{gmi['valid_count']}/20（<16 為低信心）")
     with k5:
         st.metric("資料基準月", gmi["as_of"])
 

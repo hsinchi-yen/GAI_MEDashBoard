@@ -343,17 +343,18 @@ def read(key: str) -> pd.DataFrame | None:
 
 
 def _read_ts(key: str) -> pd.DataFrame | None:
-    now = int(time.time())
     with _conn() as con:
         meta = con.execute(
             "SELECT last_updated, ttl_seconds FROM ts_meta WHERE indicator_id=?", (key,)
         ).fetchone()
         if meta is None:
             return None
-        last_updated, ttl_seconds = meta
-        if now - last_updated > ttl_seconds:
-            logger.debug("ts_meta expired [%s]", key)
-            return None
+        # NOTE: TTL is intentionally NOT used to gate reads. The latest stored
+        # observation is always returned (stale-while-revalidate). A monthly
+        # series published last month is still the most recent value today, so
+        # a 1-day TTL must not make it vanish from the dashboard / GMI scoring.
+        # Use is_stale(key) to decide whether to *re-fetch*, not whether the
+        # cached data is usable.
 
         # Peek at distinct series_key values to detect grouped vs simple
         peek = con.execute(
@@ -389,7 +390,6 @@ def _read_ts(key: str) -> pd.DataFrame | None:
 
 
 def _read_blob(key: str) -> pd.DataFrame | None:
-    now = int(time.time())
     with _conn() as con:
         row = con.execute(
             "SELECT payload_json, fetched_at, ttl_seconds FROM blob_cache WHERE cache_key=?",
@@ -398,9 +398,7 @@ def _read_blob(key: str) -> pd.DataFrame | None:
     if row is None:
         return None
     payload_json, fetched_at, ttl_seconds = row
-    if now - fetched_at > ttl_seconds:
-        logger.debug("blob_cache expired [%s]", key)
-        return None
+    # Serve-stale: return the cached snapshot regardless of TTL age (see _read_ts).
     df = pd.read_json(io.StringIO(payload_json), orient="split")
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"])
@@ -451,6 +449,36 @@ def is_fresh(key: str) -> bool:
         return False
 
 
+def is_stale(key: str) -> bool:
+    """
+    True if `key` is missing entirely, or its TTL has been exceeded (needs re-fetch).
+
+    Counterpart to is_fresh(). Reads no longer gate on TTL (stale-while-revalidate),
+    so this is the canonical signal for schedulers / catch-up to decide whether to
+    re-fetch. Missing → True (definitely fetch).
+    """
+    return not is_fresh(key)
+
+
+def max_date(key: str) -> pd.Timestamp | None:
+    """
+    Latest observation date stored for `key` in ts_rows, or None if absent.
+
+    Used for conditional fetch: skip writing when the source has no observation
+    newer than what we already hold.
+    """
+    try:
+        with _conn() as con:
+            row = con.execute(
+                "SELECT MAX(day_epoch) FROM ts_rows WHERE indicator_id=?", (key,)
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return _from_day(row[0])
+    except Exception:
+        return None
+
+
 def cleanup_expired() -> int:
     """
     Remove expired blob_cache rows.
@@ -491,6 +519,28 @@ def purge_stale_series(key: str, keep: set[str]) -> int:
         return cur.rowcount
     except Exception as e:
         logger.error("purge_stale_series %s: %s", key, e)
+        return 0
+
+
+def purge_test_keys() -> int:
+    """
+    Remove leftover test/auxiliary keys (indicator_id / cache_key starting with '_')
+    from ts_rows, ts_meta and blob_cache. Returns total rows removed.
+    """
+    removed = 0
+    try:
+        with _conn() as con:
+            for stmt in (
+                "DELETE FROM ts_rows  WHERE indicator_id LIKE '\\_%' ESCAPE '\\'",
+                "DELETE FROM ts_meta  WHERE indicator_id LIKE '\\_%' ESCAPE '\\'",
+                "DELETE FROM blob_cache WHERE cache_key LIKE '\\_%' ESCAPE '\\'",
+            ):
+                removed += con.execute(stmt).rowcount
+        if removed:
+            logger.info("purge_test_keys: removed %d rows", removed)
+        return removed
+    except Exception as e:
+        logger.error("purge_test_keys: %s", e)
         return 0
 
 
