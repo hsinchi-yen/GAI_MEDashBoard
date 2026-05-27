@@ -71,7 +71,9 @@ def fetch_taiex_yoy(years_back: int = 12) -> pd.DataFrame:
 
 
 def _vkospi_stooq(years_back: int) -> pd.DataFrame:
-    """Stooq CSV fallback for VKOSPI (^VKOSPI.KO or ^VKOSPI)."""
+    """Stooq CSV fallback for VKOSPI (^VKOSPI.KO or ^VKOSPI).
+    Stooq requires an API key as of 2025; returns empty gracefully if blocked.
+    """
     cutoff = pd.Timestamp.now() - pd.DateOffset(years=years_back)
     d1 = cutoff.strftime("%Y%m%d")
     for ticker in ("^vkospi", "vkospi.ko"):
@@ -80,8 +82,13 @@ def _vkospi_stooq(years_back: int) -> pd.DataFrame:
             res = requests.get(url, headers=_YF_HEADERS, timeout=15)
             if res.status_code != 200 or not res.text.strip():
                 continue
+            text = res.text
+            # Stooq now requires an API key — detect the paywall message
+            if "apikey" in text.lower() or text.strip().startswith("Get"):
+                logger.warning("VKOSPI Stooq (%s): API key required, skipping", ticker)
+                break
             from io import StringIO
-            df = pd.read_csv(StringIO(res.text))
+            df = pd.read_csv(StringIO(text))
             if df.empty or "Date" not in df.columns:
                 continue
             df = df.rename(columns={"Date": "date", "Close": "value"})[["date", "value"]]

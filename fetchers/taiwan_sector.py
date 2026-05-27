@@ -334,14 +334,16 @@ def fetch_tw_sector_institutional_by_sector(n_days: int = 5) -> pd.DataFrame:
       [date, sector_name, foreign_net, trust_net, dealer_net, total_net]
     All amounts in NT$ thousands.  Positive = net buy, negative = net sell.
 
-    Falls back to empty DataFrame if endpoint is unavailable.
+    Falls back to empty DataFrame if endpoint is unavailable or returns HTML.
+    Note: TWSE BFIAMU endpoint may not be publicly accessible from all IPs.
     """
     records: list[dict] = []
     dates_to_try = _last_trading_days(n_days + 10)
     collected = 0
+    _endpoint_failed = False  # stop retrying if first call returns HTML
 
     for date_str in dates_to_try:
-        if collected >= n_days:
+        if collected >= n_days or _endpoint_failed:
             break
         try:
             resp = requests.get(
@@ -352,6 +354,12 @@ def fetch_tw_sector_institutional_by_sector(n_days: int = 5) -> pd.DataFrame:
             )
             if resp.status_code != 200:
                 continue
+            # TWSE returns HTML when the endpoint is unavailable from this IP
+            ct = resp.headers.get("Content-Type", "")
+            if "html" in ct or resp.text.lstrip().startswith("<"):
+                logger.info("BFIAMU: endpoint returned HTML (may require TWSE network access)")
+                _endpoint_failed = True
+                break
             j = resp.json()
             if j.get("stat") != "OK" or not j.get("data"):
                 continue
