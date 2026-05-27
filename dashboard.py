@@ -410,6 +410,7 @@ def load_tw_sector_data() -> dict:
         fetch_tw_sector_indices,
         fetch_tw_sector_turnover,
         fetch_tw_sector_institutional,
+        fetch_tw_sector_institutional_by_sector,
         calc_sector_momentum,
         detect_rotation_signal,
     )
@@ -423,8 +424,6 @@ def load_tw_sector_data() -> dict:
             chg_df = chg_raw.rename(columns={"series_key": "sector_name", "value": "chg_pct"})
             sector_df = sector_df.merge(chg_df, on=["date", "sector_name"], how="left")
     else:
-        # Fallback: live fetch (first run before scheduler populates DB).
-        # 70 days covers the 60-day minimum for momentum calc with a small buffer.
         sector_df = fetch_tw_sector_indices(n_days=70)
 
     # ── turnover: blob_cache (60-day snapshot) ────────────────────────────────
@@ -432,19 +431,25 @@ def load_tw_sector_data() -> dict:
     if turnover_df is None or turnover_df.empty:
         turnover_df = fetch_tw_sector_turnover(n_days=60)
 
-    # ── institutional net buy/sell by sector (5-day snapshot) ─────────────────
+    # ── overall institutional (market-wide, BFI82U) ───────────────────────────
     instit_df = db_manager.read("tw_sector_institutional")
     if instit_df is None or instit_df.empty:
         instit_df = fetch_tw_sector_institutional(n_days=5)
 
+    # ── sector-level institutional (BFIAMU) ───────────────────────────────────
+    instit_sector_df = db_manager.read("tw_sector_instit_by_sector")
+    if instit_sector_df is None or instit_sector_df.empty:
+        instit_sector_df = fetch_tw_sector_institutional_by_sector(n_days=5)
+
     momentum_df = calc_sector_momentum(sector_df) if not sector_df.empty else pd.DataFrame()
     signals     = detect_rotation_signal(momentum_df) if not momentum_df.empty else {}
     return {
-        "sector_df":   sector_df,
-        "turnover_df": turnover_df,
-        "instit_df":   instit_df,
-        "momentum_df": momentum_df,
-        "signals":     signals,
+        "sector_df":        sector_df,
+        "turnover_df":      turnover_df,
+        "instit_df":        instit_df,
+        "instit_sector_df": instit_sector_df,
+        "momentum_df":      momentum_df,
+        "signals":          signals,
     }
 
 
@@ -1058,7 +1063,16 @@ with tab_b:
 
     # ── OECD CLI ───────────────────────────────────────────────────────────────
     st.subheader("📈 OECD 綜合領先指標 (CLI)")
-    st.caption("預測經濟轉折點，基準=100；持續上升並突破 100 代表景氣復甦確認")
+    _cli_dfs = [data.get(k) for k in ('US_CLI','CN_CLI','JP_CLI','EU_CLI','KR_CLI')
+                if data.get(k) is not None and not data.get(k).empty]
+    _cli_max_date = max(df['date'].max() for df in _cli_dfs) if _cli_dfs else None
+    _cli_stale_note = ""
+    if _cli_max_date is not None:
+        _cli_months_old = (pd.Timestamp.now() - _cli_max_date).days / 30
+        if _cli_months_old > 12:
+            _cli_stale_note = (f"　⚠️ **資料截止 {_cli_max_date.strftime('%Y-%m')}"
+                               f"（已約 {int(_cli_months_old)} 個月未更新，DBnomics OECD MEI 停更中）**")
+    st.caption(f"預測經濟轉折點，基準=100；持續上升並突破 100 代表景氣復甦確認{_cli_stale_note}")
     fig_cli = build_figure("五大經濟體 CLI", {
         "🇺🇸 美國": filt('US_CLI'), "🇨🇳 中國": filt('CN_CLI'),
         "🇯🇵 日本": filt('JP_CLI'), "🇪🇺 歐洲G4E": filt('EU_CLI'),
@@ -1067,6 +1081,13 @@ with tab_b:
     if fig_cli:
         fig_cli.add_hline(y=100, line_dash="dash", line_color="blue",
                           annotation_text="100 趨勢線", annotation_position="bottom right")
+        if _cli_max_date is not None and _cli_months_old > 12:
+            fig_cli.add_annotation(
+                text=f"⚠ 資料截止 {_cli_max_date.strftime('%Y-%m')}",
+                xref="paper", yref="paper", x=0.01, y=0.99,
+                showarrow=False, font=dict(color="#f59e0b", size=12),
+                bgcolor="rgba(0,0,0,0.5)",
+            )
         col_cli, col_cli_m = st.columns([3, 1])
         with col_cli:
             st.plotly_chart(fig_cli, width='stretch', key='fig_cli')
@@ -2189,11 +2210,12 @@ with tab_f:
     with st.spinner("載入台股類股資料（首次約 30–90 秒）…"):
         tw_sector = load_tw_sector_data()
 
-    sector_df   = tw_sector.get("sector_df",  pd.DataFrame())
-    turnover_df = tw_sector.get("turnover_df", pd.DataFrame())
-    instit_df   = tw_sector.get("instit_df",  pd.DataFrame())
-    momentum_df = tw_sector.get("momentum_df", pd.DataFrame())
-    signals     = tw_sector.get("signals", {})
+    sector_df        = tw_sector.get("sector_df",        pd.DataFrame())
+    turnover_df      = tw_sector.get("turnover_df",      pd.DataFrame())
+    instit_df        = tw_sector.get("instit_df",        pd.DataFrame())
+    instit_sector_df = tw_sector.get("instit_sector_df", pd.DataFrame())
+    momentum_df      = tw_sector.get("momentum_df",      pd.DataFrame())
+    signals          = tw_sector.get("signals", {})
 
     if sector_df.empty:
         st.warning("台股類股資料暫時無法取得，請稍後重試。")
@@ -2527,6 +2549,70 @@ with tab_f:
                 st.info(
                     "類股動能資料載入中，請稍後重整頁面。\n\n"
                     "首次啟動請執行：`docker exec macro-dashboard python scheduler.py --run-now`"
+                )
+
+            # ── 三大法人各類股買賣超（BFIAMU） ────────────────────────────────
+            st.markdown("---")
+            st.markdown("#### 🏛️ 三大法人各類股淨買超（BFIAMU）")
+            st.caption("來源：台灣證交所 BFIAMU（三大法人各類股買賣超金額統計）｜單位：千元新台幣")
+            if not instit_sector_df.empty:
+                # Use latest date available
+                _bfi_latest = instit_sector_df["date"].max()
+                _bfi_day = instit_sector_df[instit_sector_df["date"] == _bfi_latest].copy()
+                _bfi_day = _bfi_day.sort_values("total_net", ascending=False)
+
+                # Convert to 億元 for readability
+                for _col in ("foreign_net", "trust_net", "dealer_net", "total_net"):
+                    _bfi_day[_col] = (_bfi_day[_col] / 100_000).round(2)
+
+                _bfi_colors = [
+                    "#22c55e" if v >= 0 else "#ef4444"
+                    for v in _bfi_day["total_net"]
+                ]
+                fig_bfi = go.Figure(go.Bar(
+                    x=list(_bfi_day["total_net"]),
+                    y=list(_bfi_day["sector_name"]),
+                    orientation="h",
+                    marker_color=_bfi_colors,
+                    text=[f"{v:+.2f}" for v in _bfi_day["total_net"]],
+                    textposition="outside",
+                    hovertemplate=(
+                        "<b>%{y}</b><br>"
+                        "合計淨買超：%{x:+.2f} 億<br>"
+                        "<extra></extra>"
+                    ),
+                ))
+                fig_bfi.update_layout(
+                    title=f"三大法人各類股淨買超 — {_bfi_latest.strftime('%Y-%m-%d')}",
+                    xaxis_title="淨買超（億元）", yaxis_title="",
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(15,15,20,1)",
+                    font_color="#ddd",
+                    margin=dict(l=10, r=80, t=45, b=30),
+                    height=max(380, len(_bfi_day) * 28 + 80),
+                    showlegend=False,
+                )
+                fig_bfi.add_vline(x=0, line_dash="dash",
+                                  line_color="rgba(255,255,255,0.3)")
+                st.plotly_chart(fig_bfi, width='stretch', key="fig_f_bfi")
+
+                # Detail table: foreign / trust / dealer breakdown
+                _bfi_tbl = _bfi_day[["sector_name", "foreign_net",
+                                      "trust_net", "dealer_net", "total_net"]].rename(columns={
+                    "sector_name": "類股",
+                    "foreign_net": "外資（億）",
+                    "trust_net":   "投信（億）",
+                    "dealer_net":  "自營商（億）",
+                    "total_net":   "合計（億）",
+                }).reset_index(drop=True)
+                st.dataframe(
+                    _bfi_tbl.style.background_gradient(
+                        subset=["合計（億）"], cmap="RdYlGn", vmin=-5, vmax=5),
+                    hide_index=True, width='stretch',
+                )
+            else:
+                st.info(
+                    "三大法人各類股資料暫無法取得（TWSE BFIAMU 端點）。"
+                    "非交易日或 API 暫時不可用時會顯示此訊息。"
                 )
 
         # ──── F-4：13F 法人持倉 ───────────────────────────────────────────────

@@ -18,11 +18,15 @@
 ## 系統架構
 
 ```
-fetchers/           → 各指標資料抓取（8 個子模組）
+fetchers/           → 各指標資料抓取（7 個子模組）
     ├── __init__.py       匯出所有 fetch_* 函式
-    ├── base.py           FRED / DBnomics 基礎工具
-    ├── taiwan_sector.py  TWSE MI_INDEX20 + BFI82U 台股類股
-    └── ...               其他指標模組
+    ├── utils.py          共用工具（Eastmoney helper、Legacy TLS adapter）
+    ├── fred.py           FRED / DBnomics（VIX、利率、HY、銅、信貸脈衝）
+    ├── taiwan.py         台灣官方（財政部、央行、CIER PMI、FinMind+TWSE 台積電）
+    ├── global_macro.py   全球總經（ISM PMI、Eastmoney NBS、NDC、Eurostat、日本）
+    ├── yahoo_finance.py  Yahoo Finance + Stooq（指數 YoY、VKOSPI、ETF 輪動）
+    ├── edgar_13f.py      SEC EDGAR 13F-HR（20 大機構持倉）
+    └── taiwan_sector.py  TWSE MI_INDEX20 + BFI82U + BFIAMU 台股類股
 
 scheduler.py        → APScheduler 排程（每日 02:00 / 02:30 更新）
 db_manager.py       → SQLite 持久化（三表架構：ts_rows / blob_cache / ts_meta）
@@ -54,14 +58,22 @@ dashboard.py        → Streamlit UI（DB-first 讀取，fallback live fetch）
 pip install -r requirements.txt
 ```
 
-### 3. 設定 API Key（選填，不設定則跳過 FRED 指標）
+### 3. 設定 API Key（選填）
+
+建立 `.env` 檔案（容器與 `scheduler.py` 會自動載入）：
 
 ```bash
-# Linux / macOS
-export FRED_API_KEY=your_key_here
+# .env（放在專案根目錄，勿 commit）
+FRED_API_KEY=your_fred_key_here      # 選填，FRED 指標（VIX 歷史、M1 等）
+FINMIND_TOKEN=your_finmind_token     # 選填，FinMind API（台積電月營收歷史）
+```
 
-# Windows PowerShell
-$env:FRED_API_KEY = "your_key_here"
+不設定時：FRED 指標跳過（VIX 改用 Yahoo Finance）；FinMind 改用匿名模式（每小時有速率限制）。NDC、Eastmoney、TWSE 等來源均不需要 Key。
+
+Windows PowerShell 臨時設定：
+```powershell
+$env:FRED_API_KEY  = "your_key_here"
+$env:FINMIND_TOKEN = "your_token_here"
 ```
 
 ### 4. 初始化歷史資料（首次執行，約 15–20 分鐘）
@@ -179,13 +191,18 @@ SQLite 檔案：`/root/macro_dashboard_data/db/indicator_cache.sqlite3`
 ├── macro_index.py            # GMI 全球景氣指數計算
 ├── fetchers/                 # 各指標資料抓取子模組
 │   ├── __init__.py
-│   ├── base.py
-│   ├── taiwan_sector.py      # TWSE MI_INDEX20 + BFI82U
-│   └── ...
-├── tests/                    # 單元測試（192 個測試）
+│   ├── utils.py              # 共用工具 + Eastmoney helper + Legacy TLS
+│   ├── fred.py               # FRED / DBnomics / 信貸脈衝
+│   ├── taiwan.py             # 台灣官方 + FinMind + TWSE OpenAPI
+│   ├── global_macro.py       # Eastmoney NBS + NDC + Eurostat + 日本
+│   ├── yahoo_finance.py      # Yahoo Finance + Stooq + ETF 輪動
+│   ├── edgar_13f.py          # SEC EDGAR 13F-HR
+│   └── taiwan_sector.py      # MI_INDEX20 + BFI82U + BFIAMU
+├── tests/                    # 單元測試（204 個測試）
 │   ├── test_db_manager.py
 │   ├── test_taiwan_sector.py
 │   ├── test_scheduler.py
+│   ├── test_new_fetchers.py  # CN PMI / NDC / 信貸脈衝 / TSMC mock-HTTP 測試
 │   └── ...
 ├── android_dashboard/        # Android App（Kotlin + Compose）
 ├── embedded_deployment/      # ARM64 嵌入式部署腳本
@@ -207,15 +224,19 @@ SQLite 檔案：`/root/macro_dashboard_data/db/indicator_cache.sqlite3`
 | [FRED](https://fred.stlouisfed.org/) | VIX、殖利率曲線、M1、零售銷售、CPI/PPI、HY 利差、DFF、DXY、銅、布蘭特、台幣匯率 |
 | [DBnomics / OECD](https://db.nomics.world/) | OECD CLI（美中日歐韓）、ISM PMI 子項歷史資料 |
 | [Yahoo Finance](https://finance.yahoo.com/) | TAIEX / N225 / KOSPI / HSI / CSI300 YoY、ETF 量能 |
-| [TWSE](https://www.twse.com.tw/) | MI_INDEX20（19 類股日收盤）、BFI82U（三大法人類股買超） |
+| [FRED](https://fred.stlouisfed.org/) | VIX、殖利率曲線、M1、零售銷售、CPI/PPI、HY 利差、DFF、DXY、銅、布蘭特、台幣匯率 |
+| [DBnomics / OECD](https://db.nomics.world/) | OECD CLI（美中日歐韓，資料截至 2023-12） |
+| [Yahoo Finance + Stooq](https://finance.yahoo.com/) | TAIEX / N225 / KOSPI / HSI YoY、VKOSPI（Stooq fallback）、ETF 量能 |
+| [TWSE](https://www.twse.com.tw/) | MI_INDEX20（19 類股日收盤）、BFI82U（三大法人市場整體）、BFIAMU（三大法人各類股） |
 | [SEC EDGAR](https://www.sec.gov/cgi-bin/browse-edgar) | 13F-HR 機構持倉（20 大機構） |
+| [Eastmoney datacenter](https://datacenter-web.eastmoney.com/) | 中國 NBS PMI、中國 PPI YoY |
+| [MOFCOM](https://data.mofcom.gov.cn/) | 中國社融增量（信貸脈衝，Legacy TLS） |
 | [中華民國財政部](https://web02.mof.gov.tw/) | 台灣出口金額 YoY |
 | [中央銀行](https://www.cbc.gov.tw/) | M1B / M2 YoY |
 | [中華經濟研究院](https://www.cier.edu.tw/) | 台灣製造業 PMI |
-| [台積電 MOPS](https://mops.twse.com.tw/) | 台積電月營收 YoY |
-| [國發會](https://index.ndc.gov.tw/) | 景氣領先指標 |
+| [FinMind + TWSE OpenAPI](https://finmindtrade.com/) | 台積電月營收歷史（FinMind）+ 最新月 YoY（TWSE t187ap05_L） |
+| [國發會](https://index.ndc.gov.tw/) | 景氣領先指標 + 景氣對策信號分數（CSRF+POST） |
 | [韓國關稅廳](https://unipass.customs.go.kr/) | 韓國出口 YoY |
-| [中國國家統計局](https://www.stats.gov.cn/) | NBS PMI / PPI YoY |
 | [Eurostat](https://ec.europa.eu/eurostat) | 工業信心指標（ICI） |
 | [日本内閣府](https://www5.cao.go.jp/) | 景氣觀測 DI |
 

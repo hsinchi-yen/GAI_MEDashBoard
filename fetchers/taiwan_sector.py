@@ -323,6 +323,98 @@ def fetch_tw_sector_institutional(n_days: int = 5) -> pd.DataFrame:
             .reset_index(drop=True))
 
 
+def fetch_tw_sector_institutional_by_sector(n_days: int = 5) -> pd.DataFrame:
+    """
+    Fetch sector-level institutional net buy/sell from TWSE BFIAMU.
+
+    BFIAMU (三大法人各類股買賣超金額統計表) returns one row per sector with
+    aggregated buy/sell/net for 外資, 投信, 自營商.
+
+    Returns DataFrame with columns:
+      [date, sector_name, foreign_net, trust_net, dealer_net, total_net]
+    All amounts in NT$ thousands.  Positive = net buy, negative = net sell.
+
+    Falls back to empty DataFrame if endpoint is unavailable.
+    """
+    records: list[dict] = []
+    dates_to_try = _last_trading_days(n_days + 10)
+    collected = 0
+
+    for date_str in dates_to_try:
+        if collected >= n_days:
+            break
+        try:
+            resp = requests.get(
+                "https://www.twse.com.tw/rwd/zh/fund/BFIAMU",
+                params={"response": "json", "day": date_str},
+                headers=_HDR,
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                continue
+            j = resp.json()
+            if j.get("stat") != "OK" or not j.get("data"):
+                continue
+
+            fields = j.get("fields", [])
+            dt = pd.Timestamp(date_str)
+
+            def _amt(val: str) -> float:
+                try:
+                    return float(str(val).replace(",", "").replace("+", ""))
+                except (ValueError, TypeError):
+                    return 0.0
+
+            # Determine column indices from field headers defensively
+            # Typical layout: [類別, 外資買進, 外資賣出, 外資買賣超, 投信買進, 投信賣出,
+            #                  投信買賣超, 自營商買進, 自營商賣出, 自營商買賣超, 合計]
+            def _col(keyword: str) -> int:
+                for i, f in enumerate(fields):
+                    if keyword in str(f):
+                        return i
+                return -1
+
+            col_name    = 0
+            col_f_net   = _col("外資") if _col("外資") == -1 else next(
+                (i for i, f in enumerate(fields) if "外資" in str(f) and "超" in str(f)), 3)
+            col_t_net   = next(
+                (i for i, f in enumerate(fields) if "投信" in str(f) and "超" in str(f)), 6)
+            col_d_net   = next(
+                (i for i, f in enumerate(fields) if "自營" in str(f) and "超" in str(f)), 9)
+            col_total   = next(
+                (i for i, f in enumerate(fields) if "合計" in str(f)), len(fields) - 1)
+
+            for row in j["data"]:
+                sector = str(row[col_name]).strip()
+                if not sector or sector in ("合計", "總計"):
+                    continue
+                max_col = max(col_f_net, col_t_net, col_d_net, col_total)
+                if len(row) <= max_col:
+                    continue
+                records.append({
+                    "date":        dt,
+                    "sector_name": sector,
+                    "foreign_net": _amt(row[col_f_net]),
+                    "trust_net":   _amt(row[col_t_net]),
+                    "dealer_net":  _amt(row[col_d_net]),
+                    "total_net":   _amt(row[col_total]),
+                })
+            collected += 1
+            time.sleep(0.3)
+
+        except Exception as e:
+            logger.warning("BFIAMU fetch error (%s): %s", date_str, e)
+
+    if not records:
+        logger.info("fetch_tw_sector_institutional_by_sector: BFIAMU returned no data")
+        return pd.DataFrame(columns=[
+            "date", "sector_name", "foreign_net", "trust_net", "dealer_net", "total_net"
+        ])
+    return (pd.DataFrame(records)
+            .sort_values(["date", "sector_name"])
+            .reset_index(drop=True))
+
+
 def detect_rotation_signal(momentum_df: pd.DataFrame) -> dict[str, list[str]]:
     """
     Classify sectors into four rotation quadrants.

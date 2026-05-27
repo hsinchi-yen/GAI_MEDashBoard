@@ -76,6 +76,7 @@ from fetchers.taiwan_sector import (
     fetch_tw_sector_indices,
     fetch_tw_sector_turnover,
     fetch_tw_sector_institutional,
+    fetch_tw_sector_institutional_by_sector,
     SECTOR_NAMES as _TW_SECTOR_NAMES,
 )
 
@@ -292,9 +293,11 @@ def job_taiwan_sector(*, initial: bool = False) -> None:
     except Exception as e:
         logger.error("Failed to update tw_sector_close/chg_pct: %s", e)
 
-    _run("tw_sector_turnover",       fetch_tw_sector_turnover,       ttl_days=1,
+    _run("tw_sector_turnover",           fetch_tw_sector_turnover,                 ttl_days=1,
          initial=initial, n_days=60)
-    _run("tw_sector_institutional",  fetch_tw_sector_institutional,  ttl_days=1,
+    _run("tw_sector_institutional",      fetch_tw_sector_institutional,            ttl_days=1,
+         initial=initial, n_days=5)
+    _run("tw_sector_instit_by_sector",   fetch_tw_sector_institutional_by_sector,  ttl_days=1,
          initial=initial, n_days=5)
     logger.info("=== Taiwan sector complete ===")
 

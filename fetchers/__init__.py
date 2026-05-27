@@ -62,6 +62,7 @@ from .taiwan_sector import (
     fetch_tw_sector_indices,
     fetch_tw_sector_turnover,
     fetch_tw_sector_institutional,
+    fetch_tw_sector_institutional_by_sector,
     calc_sector_momentum,
     detect_rotation_signal,
     SECTOR_NAMES,
@@ -88,5 +89,6 @@ __all__ = [
     "fetch_13f_smart_money", "edgar_connectivity_test", "_13F_MAJOR_FUNDS",
     # taiwan_sector
     "fetch_tw_sector_indices", "fetch_tw_sector_turnover", "fetch_tw_sector_institutional",
+    "fetch_tw_sector_institutional_by_sector",
     "calc_sector_momentum", "detect_rotation_signal", "SECTOR_NAMES",
 ]

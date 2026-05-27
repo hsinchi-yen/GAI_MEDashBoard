@@ -70,19 +70,47 @@ def fetch_taiex_yoy(years_back: int = 12) -> pd.DataFrame:
     return fetch_index_yoy("^TWII", years_back=years_back)
 
 
-def fetch_vkospi(years_back: int = 6) -> pd.DataFrame:
-    """韓國波動率指數 VKOSPI — Yahoo Finance ^VKOSPI（月頻原始水位）"""
-    raw = _yf_chart("^VKOSPI", interval="1mo", range_str="7y")
-    if not raw:
-        return pd.DataFrame()
-    timestamps = raw.get("timestamp", [])
-    closes = raw.get("indicators", {}).get("adjclose", [{}])[0].get("adjclose", [])
-    if not timestamps or not closes:
-        return pd.DataFrame()
-    df = pd.DataFrame({"date": pd.to_datetime(timestamps, unit="s"), "value": closes})
-    df = df.dropna().sort_values("date")
+def _vkospi_stooq(years_back: int) -> pd.DataFrame:
+    """Stooq CSV fallback for VKOSPI (^VKOSPI.KO or ^VKOSPI)."""
     cutoff = pd.Timestamp.now() - pd.DateOffset(years=years_back)
-    return df[df["date"] >= cutoff].reset_index(drop=True)
+    d1 = cutoff.strftime("%Y%m%d")
+    for ticker in ("^vkospi", "vkospi.ko"):
+        try:
+            url = f"https://stooq.com/q/d/l/?s={ticker}&i=m&d1={d1}"
+            res = requests.get(url, headers=_YF_HEADERS, timeout=15)
+            if res.status_code != 200 or not res.text.strip():
+                continue
+            from io import StringIO
+            df = pd.read_csv(StringIO(res.text))
+            if df.empty or "Date" not in df.columns:
+                continue
+            df = df.rename(columns={"Date": "date", "Close": "value"})[["date", "value"]]
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.dropna().sort_values("date")
+            if df.empty:
+                continue
+            logger.info("VKOSPI: Stooq succeeded (%s, %d rows)", ticker, len(df))
+            return df.reset_index(drop=True)
+        except Exception as e:
+            logger.warning("VKOSPI Stooq error (%s): %s", ticker, e)
+    return pd.DataFrame()
+
+
+def fetch_vkospi(years_back: int = 6) -> pd.DataFrame:
+    """韓國波動率指數 VKOSPI — Yahoo Finance ^VKOSPI，失敗時 fallback 至 Stooq"""
+    raw = _yf_chart("^VKOSPI", interval="1mo", range_str="7y")
+    if raw:
+        timestamps = raw.get("timestamp", [])
+        closes = raw.get("indicators", {}).get("adjclose", [{}])[0].get("adjclose", [])
+        if timestamps and closes:
+            df = pd.DataFrame({"date": pd.to_datetime(timestamps, unit="s"), "value": closes})
+            df = df.dropna().sort_values("date")
+            cutoff = pd.Timestamp.now() - pd.DateOffset(years=years_back)
+            result = df[df["date"] >= cutoff].reset_index(drop=True)
+            if not result.empty:
+                return result
+    logger.warning("VKOSPI: Yahoo Finance empty/404 — trying Stooq fallback")
+    return _vkospi_stooq(years_back)
 
 
 def _fetch_etf_monthly(ticker: str, years_back: int = 8) -> dict:
