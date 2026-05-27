@@ -36,6 +36,7 @@ from .taiwan import (
 from .global_macro import (
     fetch_ism_pmi,
     fetch_ndc_leading_index,
+    fetch_ndc_light_score,
     fetch_china_nbs_pmi,
     fetch_japan_economy_watchers,
     fetch_china_nbs_ppi_yoy,
@@ -78,7 +79,7 @@ __all__ = [
     "fetch_taiwan_exports_amount", "fetch_cbc_money_supply", "fetch_taiwan_pmi",
     "fetch_tsmc_revenue_yoy", "fetch_taiex_yoy", "fetch_tw_institutional",
     # global_macro
-    "fetch_ism_pmi", "fetch_ndc_leading_index", "fetch_china_nbs_pmi",
+    "fetch_ism_pmi", "fetch_ndc_leading_index", "fetch_ndc_light_score", "fetch_china_nbs_pmi",
     "fetch_japan_economy_watchers", "fetch_china_nbs_ppi_yoy", "fetch_eurostat_ici",
     # yahoo_finance
     "fetch_index_yoy", "fetch_vkospi", "fetch_etf_bulk", "fetch_sector_rotation",

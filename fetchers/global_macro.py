@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from io import BytesIO, StringIO
 
@@ -9,7 +10,7 @@ import requests
 from dateutil.relativedelta import relativedelta
 
 from .fred import fetch_fred, fetch_dbnomics
-from .utils import compute_yoy
+from .utils import compute_yoy, fetch_eastmoney_economy
 
 logger = logging.getLogger("gai_me.fetchers.global_macro")
 
@@ -60,115 +61,74 @@ def fetch_ism_pmi(years_back: int = 12, fred_key: str | None = None) -> pd.DataF
     return result[result['date'] >= cutoff].reset_index(drop=True)
 
 
-_NDC_JSON_CANDIDATES = [
-    "https://index.ndc.gov.tw/n/api/leading",
-    "https://index.ndc.gov.tw/api/leading",
-    "https://index.ndc.gov.tw/api/v1/leading",
-    "https://index.ndc.gov.tw/n/json/leading/data",
-    "https://index.ndc.gov.tw/n/json/leading",   # 原始端點（SPA 化前仍可能有效）
-]
-
-_NDC_HTML_CANDIDATES = [
-    "https://index.ndc.gov.tw/n/zh_TW",
-    "https://index.ndc.gov.tw/n/zh_TW/trend",
-]
+_NDC_HOME = "https://index.ndc.gov.tw/n/zh_TW"
+_NDC_API = "https://index.ndc.gov.tw/n/json/"
+_NDC_CSRF_RE = re.compile(r'csrf-token"\s+content="([^"]+)"')
 
 
-def _parse_ndc_json_response(items: list, years_back: int) -> pd.DataFrame:
+def _fetch_ndc_series(endpoint: str, years_back: int) -> pd.DataFrame:
+    """NDC 景氣指標皆為 Angular SPA，需先取 csrf-token 再 POST。
+
+    回應形如 {"line":[{"x":"202603","y":39}, ...]}，x 為 AD 年月(YYYYMM)。
+    endpoint 例：leading（領先指標）、coincident（同時指標）、lightscore（景氣對策信號分數）。
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+        "Referer": _NDC_HOME,
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    try:
+        s = requests.Session()
+        home = s.get(_NDC_HOME, headers=headers, timeout=15, verify=False)
+        m = _NDC_CSRF_RE.search(home.text)
+        if not m:
+            logger.error("NDC %s: csrf-token not found", endpoint)
+            return pd.DataFrame()
+        token = m.group(1)
+        post_headers = {**headers, "X-CSRF-TOKEN": token}
+        r = s.post(_NDC_API + endpoint, headers=post_headers, data={"_token": token},
+                   timeout=15, verify=False)
+        r.raise_for_status()
+        line = r.json().get("line", [])
+    except Exception as e:
+        logger.error("NDC %s fetch error: %s", endpoint, e)
+        return pd.DataFrame()
+
     records = []
-    for item in items:
-        ym = str(item.get('ym', '') or item.get('yearmonth', '') or item.get('date', '')).strip().replace('-', '')
+    for pt in line:
+        ym = str(pt.get("x", "")).strip()
+        if len(ym) != 6 or pt.get("y") is None:
+            continue
         try:
-            if len(ym) == 5:
-                year, month = int(ym[:3]) + 1911, int(ym[3:])
-            elif len(ym) == 6:
-                year, month = int(ym[:4]), int(ym[4:])
-            else:
-                continue
-            val = float(str(item.get('score', item.get('value', item.get('index', item.get('ci', '')))).replace(',', '')))
-            records.append({'date': pd.Timestamp(year=year, month=month, day=1), 'value': val})
+            records.append({"date": pd.Timestamp(year=int(ym[:4]), month=int(ym[4:]), day=1),
+                            "value": float(pt["y"])})
         except (ValueError, TypeError):
             continue
     if not records:
         return pd.DataFrame()
-    df = pd.DataFrame(records).dropna().sort_values('date')
+    df = pd.DataFrame(records).dropna().sort_values("date").reset_index(drop=True)
     cutoff = pd.Timestamp(datetime.now() - relativedelta(years=years_back))
-    return df[df['date'] >= cutoff].reset_index(drop=True)
+    return df[df["date"] >= cutoff].reset_index(drop=True)
 
 
 def fetch_ndc_leading_index(years_back: int = 12) -> pd.DataFrame:
-    """國家發展委員會景氣領先指標 — 依序嘗試多個 API 端點 + HTML fallback"""
-    import warnings
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    """國家發展委員會景氣領先指標綜合指數（不含趨勢，2021=100）。"""
+    return _fetch_ndc_series("leading", years_back)
 
-    for url in _NDC_JSON_CANDIDATES:
-        try:
-            r = requests.get(url, headers=headers, timeout=15, verify=False)
-            if not r.ok:
-                continue
-            ct = r.headers.get("content-type", "")
-            # 過濾掉 Angular SPA 殼（回傳 HTML 而非 JSON）
-            if "html" in ct and "json" not in ct:
-                logger.debug("NDC JSON endpoint %s returned HTML, skipping", url)
-                continue
-            try:
-                payload = r.json()
-            except Exception:
-                logger.debug("NDC endpoint %s: response not valid JSON", url)
-                continue
-            items = payload if isinstance(payload, list) else payload.get("data", payload.get("items", []))
-            df = _parse_ndc_json_response(items, years_back)
-            if not df.empty:
-                logger.info("NDC Leading Index: fetched from %s (%d rows)", url, len(df))
-                return df
-        except Exception as e:
-            logger.debug("NDC JSON candidate %s error: %s", url, e)
 
-    # HTML fallback（嘗試解析表格）
-    for html_url in _NDC_HTML_CANDIDATES:
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                r = requests.get(html_url, headers=headers, timeout=15, verify=False)
-            if not r.ok:
-                continue
-            for tbl in pd.read_html(StringIO(r.text)):
-                if tbl.shape[1] < 2:
-                    continue
-                col0 = tbl.iloc[:, 0].astype(str)
-                date_rows = col0[col0.str.match(r'^\d{3}/\d{2}$|^\d{5}$')]
-                if date_rows.empty:
-                    continue
-                records = []
-                for idx in date_rows.index:
-                    try:
-                        ym_str = col0[idx].replace('/', '')
-                        if len(ym_str) == 5:
-                            year, month = int(ym_str[:3]) + 1911, int(ym_str[3:])
-                        else:
-                            continue
-                        val = pd.to_numeric(tbl.iloc[idx, 1], errors='coerce')
-                        if pd.notna(val):
-                            records.append({'date': pd.Timestamp(year=year, month=month, day=1), 'value': float(val)})
-                    except Exception:
-                        continue
-                if records:
-                    dfr = pd.DataFrame(records).dropna().sort_values('date')
-                    cutoff = pd.Timestamp(datetime.now() - relativedelta(years=years_back))
-                    return dfr[dfr['date'] >= cutoff].reset_index(drop=True)
-        except Exception as e:
-            logger.warning("NDC HTML fallback %s error: %s", html_url, e)
-
-    logger.error("NDC Leading Index: 所有端點均失敗")
-    return pd.DataFrame()
+def fetch_ndc_light_score(years_back: int = 12) -> pd.DataFrame:
+    """國發會景氣對策信號綜合分數（9~45 分，對應藍/黃藍/綠/黃紅/紅燈）。"""
+    return _fetch_ndc_series("lightscore", years_back)
 
 
 def fetch_china_nbs_pmi(years_back: int = 12) -> pd.DataFrame:
-    """中國製造業 PMI — NBS 端點境外 403，無免費替代月頻 PMI 源；永久回傳空"""
-    # NBS data.stats.gov.cn 境外 IP 全面封鎖；OECD/MEI/FRED 均無中國月頻 PMI。
-    # 比例制計分下，此指標視為缺值並排除分母，不影響其他 18 個指標的訊號正確性。
-    logger.warning("China NBS PMI: no accessible source from outside China, returning empty")
-    return pd.DataFrame()
+    """中國官方製造業 PMI — 東方財富總經資料中心（NBS 數據，境外可存取）。"""
+    # NBS data.stats.gov.cn 境外 403；改取東方財富 RPT_ECONOMY_PMI 的 MAKE_INDEX
+    # （製造業 PMI 指數，50 為榮枯線），月頻、與官方一致。
+    df = fetch_eastmoney_economy("RPT_ECONOMY_PMI", "MAKE_INDEX", years_back)
+    if df.empty:
+        logger.error("China NBS PMI: Eastmoney source failed or empty")
+    return df
 
 
 def fetch_japan_economy_watchers(years_back: int = 12) -> pd.DataFrame:
@@ -202,17 +162,12 @@ def fetch_japan_economy_watchers(years_back: int = 12) -> pd.DataFrame:
 
 
 def fetch_china_nbs_ppi_yoy(years_back: int = 12) -> pd.DataFrame:
-    """中國 PPI YoY — IMF/IFS 月頻 PPI 指數轉 YoY (NBS 端點 403 後替代源)"""
-    # IMF IFS M.CN.PPPI_IX = China Producer Price Index, monthly
-    # 需多抓 2 年供 12 期 pct_change 使用
-    df_idx = fetch_dbnomics("IMF", "IFS", "M.CN.PPPI_IX", years_back=years_back + 2)
-    if not df_idx.empty:
-        yoy = compute_yoy(df_idx)
-        if not yoy.empty:
-            cutoff = pd.Timestamp(datetime.now() - relativedelta(years=years_back))
-            return yoy[yoy["date"] >= cutoff].reset_index(drop=True)
-    logger.error("China PPI: IMF/IFS source failed or empty")
-    return pd.DataFrame()
+    """中國 PPI YoY — 東方財富總經資料中心（BASE_SAME 已是年增率%）。"""
+    # 取代失效的 IMF/IFS M.CN.PPPI_IX；RPT_ECONOMY_PPI 的 BASE_SAME 直接是 PPI 同比。
+    df = fetch_eastmoney_economy("RPT_ECONOMY_PPI", "BASE_SAME", years_back)
+    if df.empty:
+        logger.error("China PPI: Eastmoney source failed or empty")
+    return df
 
 
 def fetch_eurostat_ici(years_back: int = 12) -> pd.DataFrame:

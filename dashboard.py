@@ -171,7 +171,8 @@ def load_data(fred_key):
     data['TW_EXP_AMOUNT'] = dfetch.fetch_taiwan_exports_amount()
     data['TW_EXP_YOY']    = dfetch.compute_yoy(data['TW_EXP_AMOUNT'])
     data['KR_EXP_YOY']    = dfetch.fetch_korea_exports_yoy(fred_key)
-    data['NDC_LEADING']   = dfetch.fetch_ndc_leading_index()
+    data['NDC_LEADING']    = dfetch.fetch_ndc_leading_index()
+    data['NDC_LIGHT_SCORE'] = dfetch.fetch_ndc_light_score()
 
     # ── Panel B：獲利與成本感測 ───────────────────────────────────────────────
     data['US_CLI'] = dfetch.fetch_dbnomics('OECD', 'MEI', 'USA.LOLITONO.STSA.M')
@@ -298,6 +299,7 @@ def load_all_from_db(fred_key: str) -> dict:
                               else pd.DataFrame())
     data['KR_EXP_YOY']    = R('korea_exports_yoy')
     data['NDC_LEADING']   = R('ndc_leading')
+    data['NDC_LIGHT_SCORE'] = R('ndc_light_score')
 
     # ── Panel B: cost / profit ────────────────────────────────────────────────
     data['US_CLI'] = R('cli_us')
@@ -693,6 +695,14 @@ with tab_ov:
         else:
             st.success("所有指標均正向")
 
+    # 資料健康度：列出 GMI 計分中目前無資料的指標（透明化來源中斷）
+    _missing = [s for s in gmi["signals"] if not s["has_data"]]
+    if _missing:
+        with st.expander(f"🔌 資料中斷：{len(_missing)} 項指標目前無資料（已排除於 GMI 計分，不影響其餘訊號）",
+                         expanded=False):
+            st.caption("這些來源暫時無法取得，僅降低 valid_count；補回後 GMI 涵蓋度會自動提升。")
+            st.markdown("　".join(f"`#{s['id']} {s['name']}`" for s in _missing))
+
     st.divider()
 
     # Row 2：需求脈動
@@ -910,9 +920,9 @@ with tab_a:
         if fig_tw2:
             st.plotly_chart(fig_tw2, width='stretch', key='fig_tw2')
 
-    # ── NDC 領先指標 ───────────────────────────────────────────────────────────
+    # ── NDC 領先指標 + 景氣對策信號 ─────────────────────────────────────────────
     st.subheader("🚦 國發會景氣領先指標 (NDC CLI)")
-    st.caption("台灣官方複合領先指標，領先景氣轉折約 3~6 個月")
+    st.caption("台灣官方複合領先指標，領先景氣轉折約 3~6 個月；景氣對策信號分數 9~45 對應 藍/黃藍/綠/黃紅/紅 燈")
     ndc = filt('NDC_LEADING')
     if ndc is not None and not ndc.empty:
         col_ndc, col_ndc_m = st.columns([3, 1])
@@ -929,7 +939,43 @@ with tab_a:
             st.plotly_chart(fig_ndc, width='stretch', key='fig_ndc')
         with col_ndc_m:
             lat = ndc.iloc[-1]
-            st.metric(f"最新（{lat['date'].strftime('%Y-%m')}）", f"{lat['value']:.2f}")
+            st.metric(f"領先指標（{lat['date'].strftime('%Y-%m')}）", f"{lat['value']:.2f}")
+            light = filt('NDC_LIGHT_SCORE')
+            if light is not None and not light.empty:
+                ls = light.iloc[-1]
+                lv = int(round(ls['value']))
+                if lv <= 16:    sig, color = "藍燈 (低迷)", "🔵"
+                elif lv <= 22:  sig, color = "黃藍燈 (轉弱)", "🟡"
+                elif lv <= 31:  sig, color = "綠燈 (穩定)", "🟢"
+                elif lv <= 37:  sig, color = "黃紅燈 (轉熱)", "🟠"
+                else:           sig, color = "紅燈 (熱絡)", "🔴"
+                st.metric(f"對策信號分數（{ls['date'].strftime('%Y-%m')}）", f"{lv} 分")
+                st.markdown(f"{color} **{sig}**")
+
+        # 景氣對策信號分數色帶圖（依分數落入 藍/黃藍/綠/黃紅/紅 區間著色）
+        light = filt('NDC_LIGHT_SCORE')
+        if light is not None and not light.empty:
+            def _light_color(v):
+                v = round(v)
+                if v <= 16:   return '#2563eb'   # 藍燈
+                if v <= 22:   return '#38bdf8'   # 黃藍燈
+                if v <= 31:   return '#22c55e'   # 綠燈
+                if v <= 37:   return '#f59e0b'   # 黃紅燈
+                return '#ef4444'                 # 紅燈
+            fig_light = go.Figure()
+            _zones = [(9, 16, 'rgba(37,99,235,0.10)'), (16, 22, 'rgba(56,189,248,0.10)'),
+                      (22, 31, 'rgba(34,197,94,0.10)'), (31, 37, 'rgba(245,158,11,0.10)'),
+                      (37, 45, 'rgba(239,68,68,0.10)')]
+            for lo, hi, c in _zones:
+                fig_light.add_hrect(y0=lo, y1=hi, fillcolor=c, line_width=0, layer='below')
+            fig_light.add_trace(go.Bar(
+                x=light['date'], y=light['value'],
+                marker_color=[_light_color(v) for v in light['value']],
+                hovertemplate='%{x|%Y-%m}<br>對策信號: %{y:.0f} 分<extra></extra>', name='對策信號'))
+            fig_light.update_layout(title='景氣對策信號分數（燈號）', xaxis_title='', yaxis_title='分數',
+                                     yaxis=dict(range=[9, 45]), hovermode='x unified',
+                                     margin=dict(t=50, b=20, l=40, r=20), showlegend=False, height=260)
+            st.plotly_chart(fig_light, width='stretch', key='fig_ndc_light')
     else:
         st.info("NDC 領先指標資料暫時無法取得（官方網站可能維護中）。")
 
@@ -1043,7 +1089,7 @@ with tab_b:
             st.info("銅價資料載入中。")
     with col_tsmc:
         st.subheader("🇹🇼 台積電月營收 YoY")
-        st.caption("TWSE MOPS 2330 — 每月約 10 日公布，半導體需求端最直接硬數據")
+        st.caption("台積電(2330) — 每月約 10 日公布，半導體需求端最直接硬數據（FinMind 歷史 + TWSE 官方最新）")
         fig_tsmc = fill_chart(filt('TSMC_REVENUE_YOY'), '台積電月營收 YoY (%)', '年增率 (%)', ref_y=0)
         if fig_tsmc:
             st.plotly_chart(fig_tsmc, width='stretch', key='fig_tsmc')
@@ -1185,34 +1231,34 @@ with tab_b:
     st.divider()
     st.subheader("🏦 中國信貸脈衝")
     st.caption(
-        "M2 YoY 增速的 12 個月差分（加速度）— 正值=信貸擴張加速，領先全球總需求約 9~12 個月；"
-        "是最強的總需求領先指標之一。來源：FRED MYAGM2CNM189N"
+        "社會融資規模增量（滾動 12 月）的同比變化 — 正值=信貸擴張加速，領先全球總需求約 9~12 個月；"
+        "是最強的總需求領先指標之一。來源：商務部 社融增量統計（與 MacroMicro 中國信貸脈衝同步）"
     )
     cci_df = filt('CHINA_CREDIT_IMPULSE')
     if cci_df is not None and not cci_df.empty:
         col_cci, col_cci_m = st.columns([3, 1])
         with col_cci:
-            fig_cci = fill_chart(cci_df, '中國信貸脈衝 (M2 YoY 加速度, 百分點)', '百分點', ref_y=0,
-                                 hover_fmt='%{x|%Y-%m}<br>信貸脈衝: %{y:+.2f}pp<extra></extra>')
+            fig_cci = fill_chart(cci_df, '中國信貸脈衝 (社融 TTM 同比, %)', '%', ref_y=0,
+                                 hover_fmt='%{x|%Y-%m}<br>信貸脈衝: %{y:+.2f}%<extra></extra>')
             if fig_cci:
                 st.plotly_chart(fig_cci, width='stretch', key='fig_cci')
         with col_cci_m:
             cci_v = get_latest(cci_df); cci_p = get_prev(cci_df)
             st.metric("最新信貸脈衝",
-                      f"{cci_v:+.2f}pp" if cci_v is not None else "N/A",
-                      delta=f"{cci_v-cci_p:+.2f}" if cci_v is not None and cci_p is not None else None,
+                      f"{cci_v:+.1f}%" if cci_v is not None else "N/A",
+                      delta=f"{cci_v-cci_p:+.1f}" if cci_v is not None and cci_p is not None else None,
                       help="正值=信貸加速擴張，領先需求復甦 9~12 個月")
             if cci_v is not None:
-                if cci_v > 1:
+                if cci_v > 5:
                     st.success("信貸明顯加速 ▲▲")
                 elif cci_v > 0:
                     st.success("信貸小幅加速 ▲")
-                elif cci_v > -1:
+                elif cci_v > -5:
                     st.warning("信貸小幅收縮 ▼")
                 else:
                     st.error("信貸明顯收縮 ▼▼")
     else:
-        st.info("中國信貸脈衝資料載入中（FRED China M2，可能需要 API Key）。")
+        st.info("中國信貸脈衝資料暫時無法取得（商務部社融資料來源）。")
 
 
 # ════════════════════════════════════════════════════════

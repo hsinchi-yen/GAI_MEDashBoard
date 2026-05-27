@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from datetime import datetime, timedelta
@@ -130,59 +131,59 @@ def fetch_taiwan_pmi(years_back: int = 12) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def fetch_tsmc_revenue_yoy(years_back: int = 5) -> pd.DataFrame:
-    """台積電月營收 YoY — MOPS"""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://mops.twse.com.tw/",
-    }
+def _tsmc_latest_yoy_twse() -> tuple[pd.Timestamp, float] | None:
+    """TWSE OpenAPI t187ap05_L → 2330 最新月「去年同月增減(%)」(date, yoy)。"""
     try:
-        url = "https://mops.twse.com.tw/mops/web/ajax_t05st10_ifrs"
-        post_data = {
-            "encodeURIComponent": "1", "step": "1", "firstin": "1",
-            "off": "1", "co_id": "2330", "TYPEK": "sii",
-        }
-        r = requests.post(url, data=post_data, headers=headers, timeout=20)
+        r = requests.get("https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+                         headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
         r.raise_for_status()
-        dfs = pd.read_html(StringIO(r.text))
-        for df in dfs:
-            if df.shape[1] < 4 or df.shape[0] < 3:
+        for row in r.json():
+            if row.get("公司代號") != "2330":
                 continue
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = ['_'.join(str(c) for c in col).strip() for col in df.columns]
-            col0 = df.iloc[:, 0].astype(str)
-            date_mask = col0.str.match(r'^\d{3}\s*年\s*\d{1,2}\s*月|^\d{3}/\d{2}$')
-            if not date_mask.any():
-                continue
-            records = []
-            for idx in df[date_mask].index:
-                row = df.iloc[idx]
-                m = re.match(r'(\d+)\s*[年/]\s*(\d+)', str(row.iloc[0]))
-                if not m:
-                    continue
-                year, month = int(m.group(1)) + 1911, int(m.group(2))
-                yoy_val = None
-                for col_name in df.columns:
-                    if any(kw in str(col_name).lower() for kw in ('去年同月', 'yoy', '年增', '年同')):
-                        try:
-                            yoy_val = float(str(row[col_name]).replace(',', '').replace('%', ''))
-                            break
-                        except (ValueError, TypeError):
-                            continue
-                if yoy_val is None:
-                    try:
-                        yoy_val = float(str(row.iloc[3]).replace(',', '').replace('%', ''))
-                    except (ValueError, TypeError):
-                        pass
-                if yoy_val is not None:
-                    records.append({'date': pd.Timestamp(year=year, month=month, day=1), 'value': yoy_val})
-            if records:
-                df_out = pd.DataFrame(records).dropna().sort_values('date')
-                cutoff = pd.Timestamp(datetime.now() - relativedelta(years=years_back))
-                return df_out[df_out['date'] >= cutoff].reset_index(drop=True)
+            ym = str(row.get("資料年月", "")).strip()          # ROC YYYMM 例 11504
+            yoy = row.get("營業收入-去年同月增減(%)")
+            if len(ym) == 5 and yoy is not None:
+                date = pd.Timestamp(year=int(ym[:3]) + 1911, month=int(ym[3:]), day=1)
+                return date, float(yoy)
     except Exception as e:
-        logger.error("TSMC revenue YoY fetch error: %s", e)
-    return pd.DataFrame()
+        logger.warning("TSMC TWSE OpenAPI latest fetch error: %s", e)
+    return None
+
+
+def fetch_tsmc_revenue_yoy(years_back: int = 5) -> pd.DataFrame:
+    """台積電(2330)月營收 YoY — FinMind 歷史 + TWSE OpenAPI 補最新月。"""
+    df = pd.DataFrame()
+    try:
+        start = (datetime.now() - relativedelta(years=years_back + 1)).strftime("%Y-%m-%d")
+        params = {"dataset": "TaiwanStockMonthRevenue", "data_id": "2330", "start_date": start}
+        token = os.environ.get("FINMIND_TOKEN")          # 免費註冊可取得，提升匿名速率限制
+        if token:
+            params["token"] = token
+        r = requests.get("https://api.finmindtrade.com/api/v4/data",
+                         params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
+        r.raise_for_status()
+        rows = r.json().get("data", [])
+        recs = [{"date": pd.Timestamp(year=int(x["revenue_year"]), month=int(x["revenue_month"]), day=1),
+                 "value": float(x["revenue"])}
+                for x in rows if x.get("revenue") is not None]
+        if recs:
+            raw = pd.DataFrame(recs).drop_duplicates("date").sort_values("date").reset_index(drop=True)
+            df = compute_yoy(raw)                       # value 轉為 YoY%
+    except Exception as e:
+        logger.error("TSMC revenue YoY (FinMind) fetch error: %s", e)
+
+    # 以 TWSE 官方最新月覆蓋/補上（確保最新月即時、權威）
+    latest = _tsmc_latest_yoy_twse()
+    if latest is not None:
+        ldate, lyoy = latest
+        df = df[df["date"] != ldate] if not df.empty else df
+        df = pd.concat([df, pd.DataFrame([{"date": ldate, "value": lyoy}])], ignore_index=True)
+
+    if df.empty:
+        return pd.DataFrame()
+    df = df.dropna().sort_values("date").reset_index(drop=True)
+    cutoff = pd.Timestamp(datetime.now() - relativedelta(years=years_back))
+    return df[df["date"] >= cutoff].reset_index(drop=True)
 
 
 def fetch_taiex_yoy(years_back: int = 12) -> pd.DataFrame:

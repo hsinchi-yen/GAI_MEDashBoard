@@ -7,7 +7,7 @@ import pandas as pd
 import requests
 from dateutil.relativedelta import relativedelta
 
-from .utils import compute_yoy
+from .utils import compute_yoy, legacy_tls_session, DEFAULT_HEADERS
 
 logger = logging.getLogger("gai_me.fetchers.fred")
 
@@ -68,18 +68,47 @@ def fetch_dxy(api_key: str, years_back: int = 12) -> pd.DataFrame:
     return fetch_fred('DTWEXBGS', api_key, years_back=years_back)
 
 
-def fetch_china_credit_impulse(api_key: str, years_back: int = 12) -> pd.DataFrame:
-    raw = fetch_fred('MYAGM2CNM189N', api_key, years_back=years_back + 2)
-    if raw is None or raw.empty:
-        raw = fetch_dbnomics('OECD', 'MEI', 'CHN.MABMM201.STSA.M', years_back=years_back + 2)
-    if raw is None or raw.empty:
+_MOFCOM_SHRZGM = "https://data.mofcom.gov.cn/datamofcom/front/gnmy/shrzgmQuery"
+
+
+def fetch_china_credit_impulse(api_key: str | None = None, years_back: int = 12) -> pd.DataFrame:
+    """中國信貸脈衝 — 社會融資規模增量(月)的 12 個月滾動加總同比變化。
+
+    來源：商務部資料中心 shrzgmQuery（tiosfs=社融增量，億元，需降級 TLS）。
+    信貸脈衝 = TTM(滾動12月)社融流量的同比變化(YoY)，正值代表信貸擴張加速，
+    領先全球總需求約 9~12 個月，與 MacroMicro「中國信貸脈衝」走勢一致。
+    api_key 參數保留僅為向後相容（不再使用 FRED）。
+    """
+    try:
+        s = legacy_tls_session()
+        r = s.post(_MOFCOM_SHRZGM, headers=DEFAULT_HEADERS, timeout=30)
+        r.raise_for_status()
+        rows = r.json()
+    except Exception as e:
+        logger.error("China credit impulse (MOFCOM) fetch error: %s", e)
         return pd.DataFrame()
-    yoy = compute_yoy(raw)
-    if yoy.empty or len(yoy) < 13:
+
+    records = []
+    for row in rows:
+        ym = str(row.get("date", "")).strip()
+        flow = row.get("tiosfs")
+        if len(ym) != 6 or flow is None:
+            continue
+        try:
+            records.append({"date": pd.Timestamp(year=int(ym[:4]), month=int(ym[4:]), day=1),
+                            "flow": float(flow)})
+        except (ValueError, TypeError):
+            continue
+    if len(records) < 25:                       # 需 12(TTM) + 12(YoY) + 1
+        logger.error("China credit impulse: insufficient MOFCOM rows (%d)", len(records))
         return pd.DataFrame()
-    yoy = yoy.copy()
-    yoy['value'] = yoy['value'].diff(12)
-    return yoy.dropna().reset_index(drop=True)
+
+    df = pd.DataFrame(records).sort_values("date").reset_index(drop=True)
+    ttm = df["flow"].rolling(12).sum()          # 滾動 12 月社融流量
+    df["value"] = (ttm.diff(12) / ttm.shift(12).abs() * 100)   # TTM 流量同比變化(%)
+    out = df[["date", "value"]].dropna().reset_index(drop=True)
+    cutoff = pd.Timestamp(datetime.now() - relativedelta(years=years_back))
+    return out[out["date"] >= cutoff].reset_index(drop=True)
 
 
 def fetch_copper_yoy(api_key: str, years_back: int = 12) -> pd.DataFrame:

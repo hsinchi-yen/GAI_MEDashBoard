@@ -67,7 +67,7 @@ from fetchers import (
     fetch_fed_funds_rate, fetch_t10y3m, fetch_us_new_orders_yoy, fetch_sp500_yoy,
     fetch_taiwan_exports_amount, fetch_cbc_money_supply, fetch_taiwan_pmi,
     fetch_tsmc_revenue_yoy, fetch_taiex_yoy, fetch_tw_institutional,
-    fetch_ism_pmi, fetch_ndc_leading_index, fetch_china_nbs_pmi,
+    fetch_ism_pmi, fetch_ndc_leading_index, fetch_ndc_light_score, fetch_china_nbs_pmi,
     fetch_japan_economy_watchers, fetch_china_nbs_ppi_yoy, fetch_eurostat_ici,
     fetch_etf_bulk, fetch_sector_rotation, fetch_13f_proxy,
     fetch_index_yoy, fetch_vkospi, fetch_13f_smart_money,
@@ -186,8 +186,6 @@ def job_macro_indicators(*, initial: bool = False) -> None:
              post_sleep=api_sleep, api_key=FRED_KEY, years_back=y)
         _run("dxy",               fetch_dxy,                  ttl_days=1, initial=initial,
              post_sleep=api_sleep, api_key=FRED_KEY, years_back=y)
-        _run("china_credit",      fetch_china_credit_impulse, ttl_days=1, initial=initial,
-             post_sleep=api_sleep, api_key=FRED_KEY, years_back=y)
         _run("ism_pmi",           fetch_ism_pmi,              ttl_days=1, initial=initial,
              post_sleep=api_sleep, fred_key=FRED_KEY, years_back=y)
     else:
@@ -220,13 +218,17 @@ def job_macro_indicators(*, initial: bool = False) -> None:
          post_sleep=api_sleep, years_back=y)
     _run("ndc_leading",      fetch_ndc_leading_index,     ttl_days=3, initial=initial,
          post_sleep=api_sleep, years_back=y)
+    _run("ndc_light_score",  fetch_ndc_light_score,       ttl_days=3, initial=initial,
+         post_sleep=api_sleep, years_back=y)
 
-    # ── Global scrape (NBS / Japan / Eurostat) ────────────────────────────────
+    # ── Global scrape (NBS / Japan / Eurostat / MOFCOM) ───────────────────────
     _run("china_nbs_pmi",  fetch_china_nbs_pmi,          ttl_days=3, initial=initial,
          post_sleep=api_sleep, years_back=y)
     _run("japan_watchers", fetch_japan_economy_watchers,  ttl_days=3, initial=initial,
          post_sleep=api_sleep, years_back=y)
     _run("china_ppi_yoy",  fetch_china_nbs_ppi_yoy,      ttl_days=3, initial=initial,
+         post_sleep=api_sleep, years_back=y)
+    _run("china_credit",   fetch_china_credit_impulse,    ttl_days=3, initial=initial,
          post_sleep=api_sleep, years_back=y)
     _run("eurostat_ici",   fetch_eurostat_ici,            ttl_days=3, initial=initial,
          post_sleep=api_sleep, years_back=y)
