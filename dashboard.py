@@ -392,6 +392,23 @@ def load_gmi_history(fred_key: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
+def load_index_close_levels(years_back: int = 15) -> dict:
+    """月收 price level（給 GMI 回測算 forward return 用）— 24h 快取。
+
+    Live-fetch from Yahoo Finance for ^TWII / ^GSPC. Cheap (one GET each) so we
+    avoid the DB write-path entirely. Returns dict keyed by display name.
+    """
+    out: dict = {}
+    for label, ticker in (("TWII", "^TWII"), ("SPX", "^GSPC")):
+        try:
+            df = dfetch.fetch_index_monthly_close(ticker, years_back=years_back)
+        except Exception:
+            df = pd.DataFrame()  # fetcher already logs; UI degrades gracefully
+        out[label] = df
+    return out
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
 def load_13f_data() -> dict:
     """SEC EDGAR 13F 機構持倉 — 每日快取（24h TTL）；首次載入約 20-30 秒。"""
     return dfetch.fetch_13f_smart_money(n_top=20)
@@ -653,8 +670,9 @@ with st.sidebar:
 # ════════════════════════════════════════════════════════
 # 主分頁 Tab 導航
 # ════════════════════════════════════════════════════════
-tab_ov, tab_a, tab_b, tab_c, tab_d, tab_e, tab_f = st.tabs([
-    "📋 Overview", "A 需求感測", "B 成本/獲利", "C 流動性/風險", "D 股市比對", "E 總經指數", "F 資金輪動"
+tab_ov, tab_a, tab_b, tab_c, tab_d, tab_e, tab_f, tab_g = st.tabs([
+    "📋 Overview", "A 需求感測", "B 成本/獲利", "C 流動性/風險",
+    "D 股市比對", "E 總經指數", "F 資金輪動", "G 條件化回測",
 ])
 
 
@@ -3027,6 +3045,210 @@ with tab_f:
 **動能加速度**：近 4 週報酬率 − 前 4 週報酬率，正值表示近期漲勢比之前更快。
 
 **資料來源**：台灣證交所 MI_INDEX20（類股指數），每日收盤後更新。
+""")
+
+
+# ════════════════════════════════════════════════════════
+# Tab G — 條件化回測
+# ════════════════════════════════════════════════════════
+with tab_g:
+    from analytics.gmi_backtest import (
+        REGIME_ORDER, DEFAULT_HORIZONS,
+        compute_forward_returns, summarize_by_regime, compute_cross_correlation,
+    )
+
+    st.markdown("## 🎯 條件化回測 — 燈號 → 未來報酬分佈")
+    st.caption(
+        "用 10 年 GMI 歷史燈號（兩期確認）對應歷史 TWII / S&P 500 月收，"
+        "統計各情境下未來 1 / 3 / 6 / 12 個月的報酬分佈，回答「現在這個燈號歷史上後續走勢如何」。"
+    )
+
+    with st.spinner("載入 GMI 歷史與指數月收…"):
+        gmi_hist_g = load_gmi_history(fred_api_key)
+        prices_g   = load_index_close_levels(years_back=12)
+
+    _has_gmi    = gmi_hist_g is not None and not gmi_hist_g.empty and "confirmed_regime" in gmi_hist_g.columns
+    _has_prices = any(df is not None and not df.empty for df in prices_g.values())
+
+    if not _has_gmi or not _has_prices:
+        st.warning("GMI 歷史或指數價格資料不足；請先確認 scheduler 已執行並可連線 Yahoo Finance。")
+    else:
+        horizons = DEFAULT_HORIZONS
+        returns_df = compute_forward_returns(gmi_hist_g, prices_g, horizons=horizons)
+        stats_df   = summarize_by_regime(returns_df, include_unconditional=True)
+
+        # ── 即時 Callout：當下燈號歷史結果 ────────────────────────────────────
+        latest_row    = gmi_hist_g.iloc[-1]
+        latest_regime = latest_row["confirmed_regime"]
+        latest_label  = REGIME_LABELS.get(latest_regime, latest_regime)
+        st.markdown("### 📍 當下燈號 → 歷史後續報酬")
+
+        if latest_regime in REGIME_ORDER and not stats_df.empty:
+            cols_callout = st.columns(len(horizons))
+            for i, h in enumerate(horizons):
+                with cols_callout[i]:
+                    # 對 TWII + SPX 各算一行
+                    tw = stats_df[(stats_df["regime"] == latest_regime) &
+                                  (stats_df["horizon"] == h) &
+                                  (stats_df["market"] == "TWII")]
+                    sp = stats_df[(stats_df["regime"] == latest_regime) &
+                                  (stats_df["horizon"] == h) &
+                                  (stats_df["market"] == "SPX")]
+                    body = []
+                    if not tw.empty and tw.iloc[0]["n"] > 0:
+                        r = tw.iloc[0]
+                        body.append(f"🇹🇼 TWII 中位 <b>{r['median']:+.1f}%</b> · 勝率 {r['win_rate']:.0f}% (N={int(r['n'])})")
+                    if not sp.empty and sp.iloc[0]["n"] > 0:
+                        r = sp.iloc[0]
+                        body.append(f"🇺🇸 SPX 中位 <b>{r['median']:+.1f}%</b> · 勝率 {r['win_rate']:.0f}% (N={int(r['n'])})")
+                    st.markdown(
+                        f"<div style='background:#1a1d24;border:1px solid #444;border-radius:8px;padding:10px;'>"
+                        f"<div style='font-size:0.85em;color:#999'>{h}M 後</div>"
+                        f"<div style='font-size:0.9em;line-height:1.5'>" + "<br>".join(body) + "</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+            st.caption(f"當下燈號：{latest_label}（基準月 {pd.Timestamp(latest_row['date']).strftime('%Y-%m')}）")
+        else:
+            st.info("當下燈號為未知或無歷史樣本，跳過 callout。")
+
+        # ── 統計表 ─────────────────────────────────────────────────────────────
+        st.markdown("### 📊 完整統計表")
+        st.caption("columns：中位數 / 平均 / 勝率 / P10 / P90 / 最差單月 / 樣本數（單位 %，n 除外）")
+
+        regime_label_map = {"green": "🟢 擴張", "yellow": "🟡 觀望", "red": "🔴 收縮", "all": "⚪ 全期"}
+        disp = stats_df.copy()
+        disp["regime"]  = disp["regime"].map(regime_label_map).fillna(disp["regime"])
+        disp["horizon"] = disp["horizon"].astype(int).astype(str) + "M"
+        disp = disp.rename(columns={
+            "market": "市場", "regime": "燈號", "horizon": "Horizon",
+            "median": "中位", "mean": "平均", "win_rate": "勝率",
+            "p10": "P10", "p90": "P90", "worst": "最差", "n": "N",
+        })
+        for col in ("中位", "平均", "勝率", "P10", "P90", "最差"):
+            disp[col] = disp[col].round(1)
+        st.dataframe(disp, width='stretch', hide_index=True)
+
+        # ── Box plot ───────────────────────────────────────────────────────────
+        st.markdown("### 📈 報酬分佈 Box Plot")
+        st.caption("色帶寬度 = 歷史報酬區間；中線 = 中位數。注意樣本數 N（右側 callout）。")
+        if not returns_df.empty:
+            plot_df = returns_df.copy()
+            plot_df["fwd_return_pct"] = plot_df["fwd_pct_return"] * 100
+            plot_df["horizon_lbl"] = plot_df["horizon"].astype(int).astype(str) + "M"
+            plot_df["regime_lbl"]  = plot_df["regime"].map(regime_label_map).fillna(plot_df["regime"])
+            color_map = {
+                "🟢 擴張": "#26a65b",
+                "🟡 觀望": "#ffc800",
+                "🔴 收縮": "#ea3943",
+            }
+            fig_box = px.box(
+                plot_df,
+                x="horizon_lbl",
+                y="fwd_return_pct",
+                color="regime_lbl",
+                facet_col="market",
+                category_orders={
+                    "horizon_lbl": [f"{h}M" for h in horizons],
+                    "regime_lbl":  ["🟢 擴張", "🟡 觀望", "🔴 收縮"],
+                    "market":      ["TWII", "SPX"],
+                },
+                color_discrete_map=color_map,
+                points="all",
+                labels={"horizon_lbl": "Horizon", "fwd_return_pct": "報酬 %",
+                        "regime_lbl": "燈號"},
+            )
+            fig_box.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
+            fig_box.update_layout(height=480, boxmode="group",
+                                  legend_title_text="燈號")
+            st.plotly_chart(fig_box, width='stretch', key='fig_gmi_backtest_box')
+        else:
+            st.info("無對齊樣本，無法繪製 box plot。")
+
+        st.markdown("---")
+
+        # ── Cross-correlation heatmap ─────────────────────────────────────────
+        st.markdown("### 🕒 領先 / 落後相關係數矩陣")
+        st.caption(
+            "對 GMI 子指標與 TWII / S&P 500 YoY 算 lag −12 ~ +12 月的 Pearson 相關係數。"
+            "**正 lag = 指標領先股市**（早期預警價值）；負 lag = 指標反映股市。"
+            "顏色越深表示相關性越強。"
+        )
+
+        with st.spinner("計算交叉相關矩陣中…"):
+            data_g = load_all_from_db(fred_api_key)
+            corr_df = compute_cross_correlation(
+                data_g, prices_g, max_lag=12, min_overlap=36,
+            )
+
+        if corr_df.empty:
+            st.info("無足夠重疊樣本（需各序列 ≥ 36 月）。")
+        else:
+            tgt_pick = st.radio(
+                "選擇對照市場",
+                options=sorted(corr_df["target"].unique()),
+                horizontal=True,
+                key="gmi_corr_target",
+            )
+            sub = corr_df[corr_df["target"] == tgt_pick]
+            pivot = sub.pivot(index="indicator", columns="lag", values="correlation")
+            # 依「最大 |corr| 的 lag」排序（最領先的指標排上方）
+            peak_lag = sub.loc[sub.groupby("indicator")["correlation"].apply(
+                lambda s: s.abs().idxmax()).values, ["indicator", "lag"]].set_index("indicator")
+            order = peak_lag.sort_values("lag", ascending=False).index.tolist()
+            pivot = pivot.reindex(order)
+
+            fig_corr = px.imshow(
+                pivot,
+                color_continuous_scale="RdBu_r",
+                zmin=-0.8, zmax=0.8,
+                aspect="auto",
+                labels={"x": "Lag (月)  →  +n 表示指標領先股市 n 月",
+                        "y": "GMI 子指標",
+                        "color": "Pearson r"},
+                title=f"GMI 子指標 vs {tgt_pick} 12M YoY 相關係數（lag −12 ~ +12）",
+            )
+            fig_corr.update_xaxes(tickmode="linear", dtick=2)
+            fig_corr.update_layout(height=600)
+            st.plotly_chart(fig_corr, width='stretch', key='fig_gmi_corr_heatmap')
+
+            # Top leaders summary
+            st.markdown("#### 🥇 最領先的 5 個指標（peak |r| 出現在 lag > 0）")
+            leaders_rows = []
+            for ind, g in sub.groupby("indicator"):
+                idx = g["correlation"].abs().idxmax()
+                row = g.loc[idx]
+                if row["lag"] > 0:
+                    leaders_rows.append({
+                        "指標":     ind,
+                        "lead (月)": int(row["lag"]),
+                        "Pearson r": round(float(row["correlation"]), 3),
+                        "樣本數":   int(row["n"]),
+                    })
+            if leaders_rows:
+                leaders = pd.DataFrame(leaders_rows).sort_values("lead (月)", ascending=False).head(5)
+                st.dataframe(leaders, width='stretch', hide_index=True)
+            else:
+                st.info("沒有指標的 peak 落在正 lag 區間。")
+
+        with st.expander("📖 方法與注意事項"):
+            st.markdown("""
+**Forward return 計算**：以該月月底 GMI 燈號為「進場時點」，對 TWII / SPX 月收價格計算 1/3/6/12 月後的對數報酬，再轉百分比。
+12M horizon 的最近 12 個月會因為「未來未發生」自動排除。
+
+**燈號定義**：使用 `confirmed_regime`（已套用兩期反鋸齒確認），與 Tab E 顯示一致。
+
+**樣本數警示**：紅燈在過去 10 年出現次數較少，部分 horizon 的 N 可能 < 20，請對應參考 P10/P90 範圍而非僅看中位數。
+
+**Cross-correlation**：
+- 對 GMI 20 個子指標的原始值（PMI、YoY%、利差等）與目標市場的 12M 對數報酬，跑 lag = −12 ~ +12。
+- 正 lag = 指標領先股市；負 lag = 反過來。要求最少 36 月重疊。
+- 「lead 月數」是 |r| 最大時的 lag。peak 落在正 lag 表示該指標在歷史上對該市場有領先性。
+
+**侷限**：
+- 本回測為純歷史描述，**不是預測模型**。樣本期 10 年內只經歷一次完整景氣週期（2018-2020、2022-2023），統計推論的外延性有限。
+- forward return 為單期 to-from，未計入路徑風險（中間最大回撤需另外實作）。
+- Cross-correlation 為 Pearson（線性）相關，對非線性或門檻效應不敏感。
 """)
 
 

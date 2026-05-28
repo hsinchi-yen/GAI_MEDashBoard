@@ -70,6 +70,28 @@ def fetch_taiex_yoy(years_back: int = 12) -> pd.DataFrame:
     return fetch_index_yoy("^TWII", years_back=years_back)
 
 
+def fetch_index_monthly_close(ticker: str, years_back: int = 15) -> pd.DataFrame:
+    """月收 adjusted-close 價格序列（非 YoY），給回測 forward-return 計算用。
+
+    回傳 {date, value}；date 統一為當月月底（UTC tz-naive），方便與 GMI history join。
+    """
+    range_str = f"{max(years_back, 5)}y"
+    raw = _yf_chart(ticker, interval="1mo", range_str=range_str)
+    if not raw:
+        return pd.DataFrame()
+    timestamps = raw.get("timestamp", [])
+    closes = raw.get("indicators", {}).get("adjclose", [{}])[0].get("adjclose", [])
+    if not timestamps or not closes:
+        return pd.DataFrame()
+    df = pd.DataFrame({"date": pd.to_datetime(timestamps, unit="s"), "value": closes})
+    df = df.dropna().sort_values("date")
+    cutoff = pd.Timestamp.now() - pd.DateOffset(years=years_back)
+    df = df[df["date"] >= cutoff].reset_index(drop=True)
+    # Snap to month-end so backtest joins on the same key as GMI history.
+    df["date"] = df["date"].dt.to_period("M").dt.to_timestamp("M")
+    return df.drop_duplicates(subset="date", keep="last").reset_index(drop=True)
+
+
 def _vkospi_stooq(years_back: int) -> pd.DataFrame:
     """Stooq CSV fallback for VKOSPI (^VKOSPI.KO or ^VKOSPI).
     Stooq requires an API key as of 2025; returns empty gracefully if blocked.

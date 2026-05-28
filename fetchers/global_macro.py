@@ -171,46 +171,65 @@ def fetch_china_nbs_ppi_yoy(years_back: int = 12) -> pd.DataFrame:
 
 
 def fetch_eurostat_ici(years_back: int = 12) -> pd.DataFrame:
-    """歐洲工業信心指標 (ICI) — Eurostat SDMX（嘗試 5 維度/4 維度 × 3 地域碼）"""
+    """歐洲工業信心指標 (ICI) — Eurostat SDMX `ei_bsin_m_r2`.
+
+    Eurostat 自 2024 起強制 5 維度 key（首維為 freq=M）。
+    geo 序：EA21（保加利亞 2026-01 加入後的歐元區現行組合）→ EA20（舊版，2025-12 後凍結）→ EU27_2020（歐盟整體，廣義替代）。
+    回傳值加 50 與 PMI 50 榮枯線對齊（balance 原本約 -30 ~ +20）。
+    若 fetcher 取到的最新資料月份 < 今天-3 月，視為已凍結並嘗試下一個 geo。
+    """
     since_year = datetime.now().year - years_back
-    for geo_code in ("EA20", "EA21", "EU27_2020"):
-        # 先試加 freq 前綴的 5 維度格式（Eurostat 2024+ 新格式），再試原 4 維度
-        for key_prefix in ("M.", ""):
+    stale_cutoff = pd.Timestamp(datetime.now() - relativedelta(months=3))
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+
+    for geo_code in ("EA21", "EA20", "EU27_2020"):
+        url = (
+            "https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data/"
+            f"ei_bsin_m_r2/M.BS-ICI.SA.BAL.{geo_code}"
+            f"?format=JSON&sinceTimePeriod={since_year}-01"
+        )
+        try:
+            r = requests.get(url, headers=headers, timeout=30)
+            if not r.ok:
+                logger.warning("Eurostat ICI %s: HTTP %s", geo_code, r.status_code)
+                continue
+            data = r.json()
+        except Exception as e:
+            logger.warning("Eurostat ICI %s: %s", geo_code, e)
+            continue
+
+        time_idx = data.get("dimension", {}).get("time", {}).get("category", {}).get("index", {})
+        vals = data.get("value", {})
+        if not time_idx or not vals:
+            logger.warning("Eurostat ICI %s: empty index/value", geo_code)
+            continue
+
+        inv_time = {pos: period for period, pos in time_idx.items()}
+        records = []
+        for pos_str, raw_val in vals.items():
             try:
-                url = (
-                    "https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/data/"
-                    f"ei_bsin_m_r2/{key_prefix}BS-ICI.SA.BAL.{geo_code}"
-                    f"?format=JSON&sinceTimePeriod={since_year}-01"
-                )
-                r = requests.get(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"}, timeout=30)
-                if not r.ok:
-                    logger.debug("Eurostat ICI (%s prefix=%r): HTTP %s", geo_code, key_prefix, r.status_code)
+                period = inv_time.get(int(pos_str), "")
+                if len(period) != 7:
                     continue
-                data = r.json()
-                dims  = data.get("dimension", {})
-                sizes = data.get("size", [])
-                vals  = data.get("value", {})
-                time_idx = dims.get("time", {}).get("category", {}).get("index", {})
-                nt = sizes[-1] if sizes else len(time_idx)
-                if not nt or not vals:
-                    continue
-                inv_time = {v: k for k, v in time_idx.items()}
-                records = []
-                for pos_str, raw_val in vals.items():
-                    try:
-                        period = inv_time.get(int(pos_str) % nt, "")
-                        if len(period) != 7:
-                            continue
-                        records.append({"date": pd.Timestamp(period + "-01"), "value": float(raw_val) + 50.0})
-                    except (ValueError, TypeError):
-                        continue
-                if not records:
-                    continue
-                df = pd.DataFrame(records).drop_duplicates(subset="date", keep="first").sort_values("date")
-                cutoff = pd.Timestamp(datetime.now() - relativedelta(years=years_back))
-                result = df[df["date"] >= cutoff].reset_index(drop=True)
-                if not result.empty:
-                    return result
-            except Exception as e:
-                logger.warning("Eurostat ICI (%s prefix=%r): %s", geo_code, key_prefix, e)
+                records.append({"date": pd.Timestamp(period + "-01"), "value": float(raw_val) + 50.0})
+            except (ValueError, TypeError):
+                continue
+        if not records:
+            continue
+
+        df = pd.DataFrame(records).drop_duplicates(subset="date", keep="first").sort_values("date")
+        cutoff = pd.Timestamp(datetime.now() - relativedelta(years=years_back))
+        result = df[df["date"] >= cutoff].reset_index(drop=True)
+        if result.empty:
+            continue
+
+        latest = result["date"].max()
+        if latest < stale_cutoff:
+            logger.info("Eurostat ICI %s latest=%s is stale (>3 months old); trying next geo",
+                        geo_code, latest.strftime("%Y-%m"))
+            continue
+        logger.info("Eurostat ICI %s: %d rows, latest=%s", geo_code, len(result), latest.strftime("%Y-%m"))
+        return result
+
+    logger.error("Eurostat ICI: all geo codes exhausted")
     return pd.DataFrame()

@@ -45,6 +45,7 @@ from .global_macro import (
 
 from .yahoo_finance import (
     fetch_index_yoy,
+    fetch_index_monthly_close,
     fetch_vkospi,
     fetch_etf_bulk,
     fetch_sector_rotation,
@@ -83,7 +84,8 @@ __all__ = [
     "fetch_ism_pmi", "fetch_ndc_leading_index", "fetch_ndc_light_score", "fetch_china_nbs_pmi",
     "fetch_japan_economy_watchers", "fetch_china_nbs_ppi_yoy", "fetch_eurostat_ici",
     # yahoo_finance
-    "fetch_index_yoy", "fetch_vkospi", "fetch_etf_bulk", "fetch_sector_rotation",
+    "fetch_index_yoy", "fetch_index_monthly_close", "fetch_vkospi",
+    "fetch_etf_bulk", "fetch_sector_rotation",
     "fetch_13f_proxy", "SECTOR_ETFS",
     # edgar_13f
     "fetch_13f_smart_money", "edgar_connectivity_test", "_13F_MAJOR_FUNDS",
