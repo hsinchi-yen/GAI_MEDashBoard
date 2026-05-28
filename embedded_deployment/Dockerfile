@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Application code
 COPY dashboard.py data_fetcher.py db_manager.py macro_index.py scheduler.py ./
 COPY fetchers/ fetchers/
+COPY analytics/ analytics/
 
 # Streamlit config: headless, port 8501, no telemetry
 RUN mkdir -p /root/.streamlit && \
