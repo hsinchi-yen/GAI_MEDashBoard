@@ -5,6 +5,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.lance.gaimedashboard.data.LoadState
 import com.lance.gaimedashboard.data.withinYears
@@ -84,6 +85,33 @@ private val infoNewOrders = IndicatorInfo(
     investmentNote = "製造業新訂單 YoY 連續轉正是佈局工業股與半導體設備股的早期訊號。"
 )
 
+private val infoAsiaIndex = IndicatorInfo(
+    title = "亞洲主要指數 YoY 比對",
+    summary = "觀察亞太市場相對強弱與資金輪動方向",
+    details = """整合 S&P500、TAIEX、日經225、KOSPI、恒生與滬深300 月頻年增率。
+
+• 多數指數同步轉正：風險偏好擴散，資金通常由防禦轉向成長
+• 指數分化擴大：區域與產業輪動加速，需留意匯率與政策差異
+
+此圖可與 TWD/USD、HY 利差、DXY 交叉驗證，辨識外資風險偏好變化。""",
+    source = "Yahoo Finance（月收）",
+    investmentNote = "跨市場相關性下降時，代表去相關化提升，跨區域配置通常更有效。"
+)
+
+private val infoVixVkospi = IndicatorInfo(
+    title = "VIX vs VKOSPI 波動率比對",
+    summary = "美國與韓國恐慌指標共振，可快速辨識風險外溢",
+    details = """VIX 代表美股隱含波動率；VKOSPI 代表韓股期權隱含波動率。
+
+• VIX、VKOSPI 同步上升：亞太與美股風險偏好同步惡化
+• 僅 VKOSPI 上升：偏區域性事件衝擊
+• 兩者回落：風險事件緩解，市場回到正常波動區間
+
+若同時伴隨 HY 利差擴大，通常為降低股票曝險的強警訊。""",
+    source = "FRED VIXCLS + Yahoo ^VKOSPI",
+    investmentNote = "兩者同時站上高檔後回落，常是風險資產由弱轉穩的重要觀察點。"
+)
+
 // ── Screen ────────────────────────────────────────────────────────────────────
 
 @Composable
@@ -109,6 +137,22 @@ fun StockScreen(vm: DashboardViewModel) {
             else -> emptyList()
         }
         val taiexSeries = when (val s = vm.taiexYoyState) {
+            is LoadState.Success -> s.data.withinYears(vm.rangeYears)
+            else -> emptyList()
+        }
+        val nikkeiSeries = when (val s = vm.nikkeiYoyState) {
+            is LoadState.Success -> s.data.withinYears(vm.rangeYears)
+            else -> emptyList()
+        }
+        val kospiSeries = when (val s = vm.kospiYoyState) {
+            is LoadState.Success -> s.data.withinYears(vm.rangeYears)
+            else -> emptyList()
+        }
+        val hsiSeries = when (val s = vm.hsiYoyState) {
+            is LoadState.Success -> s.data.withinYears(vm.rangeYears)
+            else -> emptyList()
+        }
+        val csi300Series = when (val s = vm.csi300YoyState) {
             is LoadState.Success -> s.data.withinYears(vm.rangeYears)
             else -> emptyList()
         }
@@ -153,6 +197,122 @@ fun StockScreen(vm: DashboardViewModel) {
                         referenceY     = 0f,
                         referenceLabel = "0%",
                         modifier       = Modifier.fillMaxSize()
+                    )
+                }
+            }
+        }
+
+        // ── 亞洲主要指數 YoY 比對 ─────────────────────────────────────────
+        SectionTitle("🌏", "亞洲主要指數 YoY 比對")
+        InfoPanel(infoAsiaIndex)
+        Spacer(Modifier.height(8.dp))
+
+        val asiaLoading = vm.sp500YoyState is LoadState.Loading ||
+                vm.taiexYoyState is LoadState.Loading ||
+                vm.nikkeiYoyState is LoadState.Loading ||
+                vm.kospiYoyState is LoadState.Loading ||
+                vm.hsiYoyState is LoadState.Loading ||
+                vm.csi300YoyState is LoadState.Loading
+
+        val asiaSeriesList = buildList {
+            if (sp500Series.isNotEmpty()) add(ChartSeries("🇺🇸 S&P500 YoY %", ColorUS, sp500Series))
+            if (taiexSeries.isNotEmpty()) add(ChartSeries("🇹🇼 TAIEX YoY %", ColorTW, taiexSeries))
+            if (nikkeiSeries.isNotEmpty()) add(ChartSeries("🇯🇵 日經225 YoY %", ColorJP, nikkeiSeries))
+            if (kospiSeries.isNotEmpty()) add(ChartSeries("🇰🇷 KOSPI YoY %", ColorKR, kospiSeries))
+            if (hsiSeries.isNotEmpty()) add(ChartSeries("🇭🇰 恒生 YoY %", Color(0xFFE11D48), hsiSeries))
+            if (csi300Series.isNotEmpty()) add(ChartSeries("🇨🇳 滬深300 YoY %", ColorCN, csi300Series))
+        }
+
+        when {
+            asiaLoading -> LoadingCard()
+            asiaSeriesList.isEmpty() -> ErrorCard("亞洲指數資料暫時無法取得", onRetry = { vm.refreshPanelD() })
+            else -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    LatestValueCard(
+                        label = "🇯🇵 日經225 YoY",
+                        seriesColor = ColorJP,
+                        data = when (val s = vm.nikkeiYoyState) { is LoadState.Success -> s.data; else -> emptyList() },
+                        logic = SignalLogic.SpreadInversion,
+                        modifier = Modifier.weight(1f)
+                    )
+                    LatestValueCard(
+                        label = "🇰🇷 KOSPI YoY",
+                        seriesColor = ColorKR,
+                        data = when (val s = vm.kospiYoyState) { is LoadState.Success -> s.data; else -> emptyList() },
+                        logic = SignalLogic.SpreadInversion,
+                        modifier = Modifier.weight(1f)
+                    )
+                    LatestValueCard(
+                        label = "🇨🇳 滬深300 YoY",
+                        seriesColor = ColorCN,
+                        data = when (val s = vm.csi300YoyState) { is LoadState.Success -> s.data; else -> emptyList() },
+                        logic = SignalLogic.SpreadInversion,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(chartH)) {
+                    MacroLineChart(
+                        seriesList = asiaSeriesList,
+                        referenceY = 0f,
+                        referenceLabel = "0%",
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+        }
+
+        // ── 亞洲 VIX 風險監控 ───────────────────────────────────────────────
+        SectionTitle("📡", "亞洲 VIX 風險監控（VIX vs VKOSPI）")
+        InfoPanel(infoVixVkospi)
+        Spacer(Modifier.height(8.dp))
+
+        val vixSeries = when (val s = vm.vixState) {
+            is LoadState.Success -> s.data.withinYears(vm.rangeYears)
+            else -> emptyList()
+        }
+        val vkospiSeries = when (val s = vm.vkospiState) {
+            is LoadState.Success -> s.data.withinYears(vm.rangeYears)
+            else -> emptyList()
+        }
+
+        when {
+            vm.vixState is LoadState.Loading || vm.vkospiState is LoadState.Loading -> LoadingCard()
+            vixSeries.isEmpty() && vkospiSeries.isEmpty() -> ErrorCard("VIX/VKOSPI 資料暫時無法取得", onRetry = { vm.loadAll() })
+            else -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    LatestValueCard(
+                        label = "🇺🇸 VIX",
+                        seriesColor = ColorUS,
+                        data = when (val s = vm.vixState) { is LoadState.Success -> s.data; else -> emptyList() },
+                        logic = SignalLogic.Plain,
+                        modifier = Modifier.weight(1f)
+                    )
+                    LatestValueCard(
+                        label = "🇰🇷 VKOSPI",
+                        seriesColor = ColorKR,
+                        data = when (val s = vm.vkospiState) { is LoadState.Success -> s.data; else -> emptyList() },
+                        logic = SignalLogic.Plain,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                val riskSeries = buildList {
+                    if (vixSeries.isNotEmpty()) add(ChartSeries("🇺🇸 VIX", ColorUS, vixSeries))
+                    if (vkospiSeries.isNotEmpty()) add(ChartSeries("🇰🇷 VKOSPI", ColorKR, vkospiSeries))
+                }
+                Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(chartH)) {
+                    MacroLineChart(
+                        seriesList = riskSeries,
+                        referenceY = 20f,
+                        referenceLabel = "VIX 20",
+                        modifier = Modifier.fillMaxSize()
                     )
                 }
             }

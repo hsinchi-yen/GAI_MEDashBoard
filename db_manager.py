@@ -246,11 +246,19 @@ def _write_ts_bulk(key: str, df: pd.DataFrame, ttl_days: int) -> None:
 
 
 def _write_ts_delta(key: str, df: pd.DataFrame, ttl_days: int) -> None:
-    """INSERT OR REPLACE only rows within the last DELTA_DAYS window."""
+    """INSERT OR REPLACE rows within the last DELTA_DAYS window, plus any row
+    newer than what is already stored (covers lag-published monthly series
+    whose date stamp falls outside the 30-day window by the time they're
+    fetched — see db_manager.py module docstring)."""
     cutoff = _from_day(_today_day() - DELTA_DAYS)
-    recent = df[df["date"] >= cutoff]
+    stored_max = max_date(key)
+    if stored_max is not None:
+        mask = (df["date"] >= cutoff) | (df["date"] > stored_max)
+    else:
+        mask = df["date"] >= cutoff
+    recent = df[mask]
     if recent.empty:
-        logger.debug("ts_rows delta [%s]: no rows in last %d days — skipped", key, DELTA_DAYS)
+        logger.info("ts_rows delta [%s]: no rows in last %d days — skipped", key, DELTA_DAYS)
         return
     rows = _df_to_ts_rows(key, recent)
     with _conn() as con:
@@ -288,11 +296,17 @@ def _write_grouped_ts_bulk(key: str, df: pd.DataFrame, ttl_days: int,
 
 def _write_grouped_ts_delta(key: str, df: pd.DataFrame, ttl_days: int,
                              group_col: str, value_col: str) -> None:
-    """INSERT OR REPLACE only rows within the last DELTA_DAYS window (all series)."""
+    """INSERT OR REPLACE rows within the last DELTA_DAYS window (all series),
+    plus any row newer than what is already stored (see _write_ts_delta)."""
     cutoff = _from_day(_today_day() - DELTA_DAYS)
-    recent = df[df["date"] >= cutoff]
+    stored_max = max_date(key)
+    if stored_max is not None:
+        mask = (df["date"] >= cutoff) | (df["date"] > stored_max)
+    else:
+        mask = df["date"] >= cutoff
+    recent = df[mask]
     if recent.empty:
-        logger.debug("ts_rows grp_delta [%s]: no rows in last %d days — skipped", key, DELTA_DAYS)
+        logger.info("ts_rows grp_delta [%s]: no rows in last %d days — skipped", key, DELTA_DAYS)
         return
     rows = _df_to_grouped_ts_rows(key, recent, group_col, value_col)
     with _conn() as con:

@@ -68,6 +68,11 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
 
     var sp500YoyState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
     var taiexYoyState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
+    var nikkeiYoyState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
+    var kospiYoyState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
+    var hsiYoyState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
+    var csi300YoyState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
+    var vkospiState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
     var fedFundsState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
     var t10y3mState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
     var usNewOrdersYoyState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
@@ -291,6 +296,41 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             LoadState.Success(api.loadTaiwanStockYoy())
         } catch (e: Exception) {
             LoadState.Error(e.localizedMessage ?: "TAIEX 資料載入失敗")
+        }
+
+        nikkeiYoyState = LoadState.Loading
+        nikkeiYoyState = try {
+            LoadState.Success(api.loadNikkeiYoy())
+        } catch (e: Exception) {
+            LoadState.Error(e.localizedMessage ?: "日經225 YoY 載入失敗")
+        }
+
+        kospiYoyState = LoadState.Loading
+        kospiYoyState = try {
+            LoadState.Success(api.loadKospiYoy())
+        } catch (e: Exception) {
+            LoadState.Error(e.localizedMessage ?: "KOSPI YoY 載入失敗")
+        }
+
+        hsiYoyState = LoadState.Loading
+        hsiYoyState = try {
+            LoadState.Success(api.loadHsiYoy())
+        } catch (e: Exception) {
+            LoadState.Error(e.localizedMessage ?: "恒生 YoY 載入失敗")
+        }
+
+        csi300YoyState = LoadState.Loading
+        csi300YoyState = try {
+            LoadState.Success(api.loadCsi300Yoy())
+        } catch (e: Exception) {
+            LoadState.Error(e.localizedMessage ?: "滬深300 YoY 載入失敗")
+        }
+
+        vkospiState = LoadState.Loading
+        vkospiState = try {
+            LoadState.Success(api.loadVkospi())
+        } catch (e: Exception) {
+            LoadState.Error(e.localizedMessage ?: "VKOSPI 載入失敗")
         }
 
         fedFundsState = LoadState.Loading

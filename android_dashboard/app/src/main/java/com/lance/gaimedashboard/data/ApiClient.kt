@@ -890,6 +890,45 @@ class ApiClient {
         }.also { store(cacheKey, it) }
     }
 
+    private suspend fun loadYahooIndexYoy(cacheKey: String, ticker: String): List<DataPoint> {
+        cached(cacheKey)?.let { return it }
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val raw = fetchYahooMonthlySeries(ticker, "adjclose")
+                raw.computeYoY()
+            }.getOrDefault(emptyList())
+        }.also { store(cacheKey, it) }
+    }
+
+    /** Panel D: Nikkei 225 monthly YoY % (Yahoo ^N225). */
+    suspend fun loadNikkeiYoy(): List<DataPoint> =
+        loadYahooIndexYoy(cacheKey = "nikkei_yoy", ticker = "%5EN225")
+
+    /** Panel D: KOSPI monthly YoY % (Yahoo ^KS11). */
+    suspend fun loadKospiYoy(): List<DataPoint> =
+        loadYahooIndexYoy(cacheKey = "kospi_yoy", ticker = "%5EKS11")
+
+    /** Panel D: Hang Seng monthly YoY % (Yahoo ^HSI). */
+    suspend fun loadHsiYoy(): List<DataPoint> =
+        loadYahooIndexYoy(cacheKey = "hsi_yoy", ticker = "%5EHSI")
+
+    /** Panel D: CSI300 monthly YoY % (Yahoo 000300.SS). */
+    suspend fun loadCsi300Yoy(): List<DataPoint> =
+        loadYahooIndexYoy(cacheKey = "csi300_yoy", ticker = "000300.SS")
+
+    /** Panel D: VKOSPI level (Yahoo ^VKOSPI, monthly close). */
+    suspend fun loadVkospi(yearsBack: Int = 6): List<DataPoint> {
+        val cacheKey = "vkospi"
+        cached(cacheKey)?.let { return it }
+        val cutoff = System.currentTimeMillis() - yearsBack * 365L * 24L * 60L * 60L * 1000L
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                fetchYahooMonthlySeries("%5EVKOSPI", "adjclose")
+                    .filter { it.timestamp >= cutoff }
+            }.getOrDefault(emptyList())
+        }.also { store(cacheKey, it) }
+    }
+
     /** Panel D: Fed Funds Rate monthly average (FRED DFF). */
     suspend fun loadFedFundsRate(apiKey: String): List<DataPoint> {
         if (apiKey.isBlank()) return emptyList()

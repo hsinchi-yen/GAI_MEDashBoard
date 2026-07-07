@@ -185,6 +185,30 @@ class TestSimpleTs:
         # Either None (ts_meta not set because nothing was written) or empty
         assert r is None or r.empty
 
+    def test_delta_write_keeps_rows_newer_than_stored_max(self):
+        """Lag-published monthly series: a row dated outside the DELTA_DAYS
+        window must still be written in delta mode if it is newer than the
+        latest date already stored for that key (regression test for the
+        silent-drop bug where monthly govt data froze at the last bulk load)."""
+        history = pd.DataFrame({
+            "date":  pd.to_datetime(["2026-01-01", "2026-02-01", "2026-03-01"]),
+            "value": [1.0, 2.0, 3.0],
+        })
+        db_manager.write("ts_monthly", history, ttl_days=3, initial=True)
+
+        future = int(pd.Timestamp("2026-07-07").timestamp())
+        new_month = pd.DataFrame({
+            "date":  pd.to_datetime(["2026-04-01"]),
+            "value": [4.0],
+        })
+        with patch.object(db_manager, "_today_day", return_value=future // 86400):
+            db_manager.write("ts_monthly", new_month, ttl_days=3, initial=False)
+
+        r = db_manager.read("ts_monthly")
+        assert r is not None
+        assert pd.Timestamp("2026-04-01") in set(r["date"])
+        assert len(r) == 4
+
     def test_read_returns_none_when_key_missing(self):
         assert db_manager.read("__does_not_exist__") is None
 
