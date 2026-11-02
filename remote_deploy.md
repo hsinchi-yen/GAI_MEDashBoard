@@ -91,11 +91,19 @@ Skip on re-deploy if the volume already has data (the volume survives container 
 
 ## Step 5 — Cleanup (after each deploy)
 
-The `deploy.sh` prunes dangling images automatically. After SCP you should also remove the tar:
+The `deploy.sh` prunes dangling images but does **not** delete the tar, so remove it yourself:
 
 ```bash
-# Already handled by deploy.sh but confirm manually if needed:
 ssh root@10.1.1.230 "rm -f /root/macro-dashboard-arm64.tar && echo removed"
+```
+
+When a release retires DB data, `tools/post_deploy.py` lists it first and changes nothing by default:
+
+```bash
+scp tools/post_deploy.py root@10.1.1.230:/tmp/
+ssh root@10.1.1.230 "docker exec -i -w /app macro-dashboard python - < /tmp/post_deploy.py"             # report
+ssh root@10.1.1.230 "docker exec -i -w /app macro-dashboard python - --backfill < /tmp/post_deploy.py"  # fill snapshots
+ssh root@10.1.1.230 "docker exec -i -w /app macro-dashboard python - --purge < /tmp/post_deploy.py"     # delete
 ```
 
 For unused images from other projects — **check containers first**, then remove only if no container uses them:
@@ -129,6 +137,16 @@ http://10.1.1.230:8501
 ```
 
 ---
+
+## Verifying before you deploy
+
+`requirements.txt` sets minimum versions, so an image can resolve newer libraries than your local venv.
+Run the tests inside an amd64 build of the same Dockerfile. Emulated ARM (QEMU) is far too slow for timing or
+browser checks.
+
+```powershell
+docker build --platform linux/amd64 -t macro-dashboard:smoke-amd64 -f embedded_deployment\Dockerfile .
+```
 
 ## Rollback
 

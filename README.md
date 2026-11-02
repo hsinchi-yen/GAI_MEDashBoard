@@ -244,8 +244,9 @@ SQLite 檔案：`/root/macro_dashboard_data/db/indicator_cache.sqlite3`
 ├── android_dashboard/        # Android App（Kotlin + Compose）
 ├── embedded_deployment/      # ARM64 嵌入式部署腳本
 │   ├── Dockerfile            # ARM64 映像定義
-│   ├── deploy.sh             # Yocto 端部署腳本
-│   └── run_docker.sh         # 直接在 Yocto 建置並執行
+│   └── deploy.sh             # Yocto 端部署腳本
+├── tools/
+│   └── post_deploy.py        # 部署後資料遷移（預設只回報，不修改）
 ├── build_arm64.ps1           # Windows 跨編譯腳本（buildx）
 ├── Dockerfile                # x86 Docker 映像定義
 ├── requirements.txt
