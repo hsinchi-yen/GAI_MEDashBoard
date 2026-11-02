@@ -23,6 +23,9 @@ _YF_HEADERS = {
 }
 
 
+_BAR_DAY_MARGIN = 6 * 3600  # seconds
+
+
 def _yf_chart(ticker: str, interval: str = "1mo", range_str: str = "15y") -> dict:
     """Fetch Yahoo Finance chart API for a single ticker.
 
@@ -51,6 +54,19 @@ def _yf_chart(ticker: str, interval: str = "1mo", range_str: str = "15y") -> dic
     return {}
 
 
+def _bar_dates(raw: dict) -> pd.DatetimeIndex:
+    """Calendar dates of Yahoo monthly bars, in the exchange's local time.
+
+    Bars are stamped at local midnight, which for Asian markets is the previous
+    day in UTC, so raw UTC puts Taipei's October bar in September. `gmtoffset` is
+    the offset *today*, though: after US clocks change, October's bar (midnight
+    EDT) minus the EST offset lands on Sep 30 at 23:00. The half-day margin keeps
+    a bar on its own date across that one-hour shift.
+    """
+    offset = (raw.get("meta") or {}).get("gmtoffset", 0) or 0
+    return pd.to_datetime(pd.Series(raw.get("timestamp", [])) + offset + _BAR_DAY_MARGIN, unit="s")
+
+
 def fetch_index_yoy(ticker: str, years_back: int = 12) -> pd.DataFrame:
     """通用股市指數月頻 YoY (%) — Yahoo Finance v8"""
     raw = _yf_chart(ticker, interval="1mo", range_str="15y")
@@ -60,7 +76,7 @@ def fetch_index_yoy(ticker: str, years_back: int = 12) -> pd.DataFrame:
     closes = raw.get("indicators", {}).get("adjclose", [{}])[0].get("adjclose", [])
     if not timestamps or not closes:
         return pd.DataFrame()
-    df = pd.DataFrame({"date": pd.to_datetime(timestamps, unit="s"), "value": closes})
+    df = pd.DataFrame({"date": _bar_dates(raw), "value": closes})
     df = df.dropna().sort_values("date")
     cutoff = pd.Timestamp.now() - pd.DateOffset(years=years_back + 1)
     return compute_yoy(df[df["date"] >= cutoff])
@@ -83,7 +99,7 @@ def fetch_index_monthly_close(ticker: str, years_back: int = 15) -> pd.DataFrame
     closes = raw.get("indicators", {}).get("adjclose", [{}])[0].get("adjclose", [])
     if not timestamps or not closes:
         return pd.DataFrame()
-    df = pd.DataFrame({"date": pd.to_datetime(timestamps, unit="s"), "value": closes})
+    df = pd.DataFrame({"date": _bar_dates(raw), "value": closes})
     df = df.dropna().sort_values("date")
     cutoff = pd.Timestamp.now() - pd.DateOffset(years=years_back)
     df = df[df["date"] >= cutoff].reset_index(drop=True)

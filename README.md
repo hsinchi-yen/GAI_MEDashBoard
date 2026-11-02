@@ -1,39 +1,76 @@
-# 📊 全球經濟指標儀表板 (Global Macro Dashboard)
+# 總經多空儀表板 (Global Macro Dashboard)
 
-即時追蹤全球總體經濟與台股資金輪動的 Streamlit 互動式儀表板。資料透過排程器（APScheduler）每日抓取並持久化至 SQLite，儀表板讀取本地快取，冷啟動後幾乎即時顯示。
+回答投資人最在意的問題：**現在總經偏多還是偏空？該怎麼做？什麼會改變判斷？**
+資料由排程器每日抓取並存入 SQLite，儀表板只讀本地資料庫，點擊幾乎即時回應。
 
-## 功能總覽
+## 頁面總覽
 
-| 看板 | 內容 |
+| 頁面 | 回答的問題 |
 |------|------|
-| **A：終端需求感測** | 五國 PMI、美國零售銷售、密西根消費者信心、台灣出口 YoY、韓國出口 YoY、NDC 景氣領先指標 |
-| **B：獲利與成本感測** | OECD CLI、美國商業庫存、半導體 PPI、10Y 實質利率、核心 CPI/PPI 剪刀差、中國 PPI、布蘭特原油、銅價 YoY、台積電營收 YoY |
-| **C：流動性與風險感測** | VIX 恐慌指數、美債殖利率曲線 / 10Y-2Y 利差、貨幣供給 M1B/M2 YoY、HY 信用利差、台幣匯率 |
-| **D：股市比對** | S&P 500 vs TAIEX YoY、聯準會基準利率 (DFF)、美債 10Y-3M 利差（衰退領先）、美國製造業新訂單 YoY |
-| **E：全球景氣總覽** | 全球 GMI 綜合熱力圖、各指標最新值 |
-| **F：台股資金輪動** | 19 類股四象限輪動快照、動能熱力圖、三大法人各類股買超、成交值佔比趨勢、13F Smart Money |
+| **今日判讀** | 五段式多空結論、四大支柱、操作框架、成長／通膨時鐘、風險警示、多空論據、距離燈號翻轉、歷史相同燈號後的報酬、可下載簡報 |
+| **趨勢雷達** | 38 項指標的方向、5 年位階、階段與轉折，可依訊號與類別篩選 |
+| **需求與貿易** | 五國 PMI、美國零售、消費者信心、台灣／韓國出口、NDC 領先指標、台積電營收 |
+| **成本與獲利** | OECD CLI、庫存、半導體 PPI、實質利率、CPI/PPI 剪刀差、中國 PPI、原油、銅價 |
+| **流動性與風險** | VIX、殖利率曲線、M1B/M2、HY 信用利差、美元、台幣、中國信貸脈衝 |
+| **股市比對** | S&P 500 vs TAIEX、Fed 利率、10Y-3M、三大法人買賣超 |
+| **GMI 指數** | 19 項指標擴散歷史、明細與內部輪動 |
+| **台股資金輪動** | 19 類股四象限、動能熱力圖、法人資金流、13F Smart Money |
+| **燈號回測** | 各燈號後 1/3/6/12 月報酬分佈、領先落後相關矩陣 |
+| **使用指南** | 判讀方法、頁面導覽與限制 |
+
+### 多空判讀規則
+
+`多空分數 = 燈號位階（擴張 +1／觀望 0／收縮 −1）+ 動能方向（3 個月擴散變化 ≥ +10pp 為 +1，≤ −10pp 為 −1）`
+
+分數 +2 到 −2 對應強烈偏多、偏多、中性、偏空、強烈偏空。規則全部公開在 `analytics/market_view.py`，
+本工具是規則式框架，**非投資建議**。
 
 ---
 
 ## 系統架構
 
 ```
-fetchers/           → 各指標資料抓取（7 個子模組）
-    ├── __init__.py       匯出所有 fetch_* 函式
-    ├── utils.py          共用工具（Eastmoney helper、Legacy TLS adapter）
-    ├── fred.py           FRED / DBnomics（VIX、利率、HY、銅、信貸脈衝）
-    ├── taiwan.py         台灣官方（財政部、央行、CIER PMI、FinMind+TWSE 台積電）
-    ├── global_macro.py   全球總經（ISM PMI、Eastmoney NBS、NDC、Eurostat、日本）
-    ├── yahoo_finance.py  Yahoo Finance + Stooq（指數 YoY、VKOSPI、ETF 輪動）
-    ├── edgar_13f.py      SEC EDGAR 13F-HR（20 大機構持倉）
-    └── taiwan_sector.py  TWSE MI_INDEX20 + BFI82U + BFIAMU 台股類股
-
-scheduler.py        → APScheduler 排程（每日 02:00 / 02:30 更新）
-db_manager.py       → SQLite 持久化（三表架構：ts_rows / blob_cache / ts_meta）
-dashboard.py        → Streamlit UI（DB-first 讀取，fallback live fetch）
+fetchers/           → 各指標資料抓取
+analytics/          → 純邏輯，不依賴 Streamlit
+    ├── indicators.py     指標目錄：多空方向、頻率、領先/落後、投資意義
+    ├── trend.py          單一序列的方向、位階、階段、轉折、資料是否過期
+    ├── market_view.py    多空判讀、支柱、風險警示、成長/通膨時鐘、書面簡報
+    └── gmi_backtest.py   條件化回測（含訊號公布時差）
+ui/                 → 呈現層
+    ├── theme.py          設計 token、全域 CSS、Plotly 模板
+    ├── components.py     純函式 HTML 元件（一律跳脫外部資料）
+    ├── charts.py         圖表與抽點（保留極值）
+    └── pages.py          今日判讀、趨勢雷達、使用指南
+macro_index.py      → GMI 評分引擎
+scheduler.py        → APScheduler 排程
+db_manager.py       → SQLite（ts_rows / blob_cache / ts_meta）與完整快照
+dashboard.py        → Streamlit 入口：導覽、快取載入器、分析頁面
 ```
 
-資料流：`fetchers → scheduler → db_manager(SQLite) → dashboard`
+資料流：`fetchers → scheduler → db_manager(SQLite) → analytics → dashboard`
+
+### 回應速度的設計
+
+- **只執行目前頁面**：點擊的成本與其他頁面的圖表數量無關；子分頁同樣延遲渲染。
+- **UI 不等外部網路**：13F、三大法人、指數月收都讀排程器快照；僅在從未抓取過時才連網，並寫回資料庫。
+- **快取以資料版本為鍵**：`db_manager.data_version()` 改變才重算，排程寫入後立即生效；
+  `cache_resource` 由所有使用者共用一份，不會每次點擊都解序列化（因此回傳物件一律視為唯讀）。
+- **圖表抽點**：每條線上限 900 點，保留每區間極值與最新兩點，尖峰與最新讀值不失真。
+
+### 測試
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests -q --cov=analytics --cov=ui --cov=macro_index --cov=db_manager --cov=dashboard
+```
+
+`tests/test_dashboard_app.py` 以 Streamlit AppTest 執行真實 `dashboard.py`，資料來自種子資料庫並封鎖所有網路。
+沒有 API Key 也能看畫面：
+
+```bash
+python tests/seed_db.py app_data/db/demo.sqlite3
+GMI_DB_PATH=app_data/db/demo.sqlite3 streamlit run dashboard.py
+```
 
 排程時間表（Asia/Taipei）：
 | 排程 | 內容 |

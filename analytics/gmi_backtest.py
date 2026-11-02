@@ -32,8 +32,13 @@ def compute_forward_returns(
     prices: dict[str, pd.DataFrame],
     horizons: tuple[int, ...] = DEFAULT_HORIZONS,
     regime_col: str = "confirmed_regime",
+    signal_lag: int = 0,
 ) -> pd.DataFrame:
-    """For each (month t, market, horizon h), compute log(P[t+h] / P[t]).
+    """For each (month t, market, horizon h), compute log(P[t+l+h] / P[t+l]).
+
+    `signal_lag` (l) delays entry to when the signal was actually knowable:
+    macro prints for month t are published during t+1, so an investor could not
+    have traded month t's regime at month t's close. Use 1 for realistic stats.
 
     Args:
         gmi_history: DataFrame with at least 'date' and `regime_col`.
@@ -41,6 +46,7 @@ def compute_forward_returns(
                      Dates are snapped to month-end internally.
         horizons:    Forward horizons in months.
         regime_col:  Which regime column to read (`regime` or `confirmed_regime`).
+        signal_lag:  Months between the signal date and the entry price.
 
     Returns:
         Long-format DataFrame with columns:
@@ -70,13 +76,14 @@ def compute_forward_returns(
         px_map = dict(zip(px["date"], px["value"]))
 
         merged = base.copy()
-        merged["px"] = merged["as_of"].map(px_map)
+        merged["entry"] = _normalize_month_end(merged["as_of"] + pd.DateOffset(months=signal_lag))
+        merged["px"] = merged["entry"].map(px_map)
         merged = merged.dropna(subset=["px"])
         if merged.empty:
             continue
 
         for h in horizons:
-            forward_dates = _normalize_month_end(merged["as_of"] + pd.DateOffset(months=h))
+            forward_dates = _normalize_month_end(merged["entry"] + pd.DateOffset(months=h))
             fwd_px = forward_dates.map(px_map)
             mask = fwd_px.notna()
             if not mask.any():

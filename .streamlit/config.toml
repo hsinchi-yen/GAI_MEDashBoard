@@ -2,6 +2,18 @@
 headless = true
 port = 8501
 address = "0.0.0.0"
+# Compress the websocket: chart JSON shrinks ~80 %, which matters on the LAN device.
+enableWebsocketCompression = true
 
 [browser]
 gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+
+[theme]
+base = "dark"
+primaryColor = "#3987e5"
+backgroundColor = "#0d0d0d"
+secondaryBackgroundColor = "#1a1a19"
+textColor = "#f0efec"

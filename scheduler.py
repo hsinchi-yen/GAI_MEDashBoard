@@ -70,7 +70,7 @@ from fetchers import (
     fetch_ism_pmi, fetch_ndc_leading_index, fetch_ndc_light_score, fetch_china_nbs_pmi,
     fetch_japan_economy_watchers, fetch_china_nbs_ppi_yoy, fetch_eurostat_ici,
     fetch_etf_bulk, fetch_sector_rotation, fetch_13f_proxy,
-    fetch_index_yoy, fetch_vkospi, fetch_13f_smart_money,
+    fetch_index_yoy, fetch_index_monthly_close, fetch_vkospi, fetch_13f_smart_money,
 )
 from fetchers.taiwan_sector import (
     fetch_tw_sector_indices,
@@ -251,10 +251,20 @@ def job_macro_indicators(*, initial: bool = False) -> None:
          post_sleep=yf_sleep, years_back=min(y, 6))
 
     # ── TWSE T86 institutional flows (always snapshot) ────────────────────────
-    _run("tw_institutional_5d",  fetch_tw_institutional, ttl_days=1, initial=initial,
-         n_days=5)
-    _run("tw_institutional_20d", fetch_tw_institutional, ttl_days=1, initial=initial,
-         n_days=20)
+    for n_days in (5, 20):
+        try:
+            result = fetch_tw_institutional(n_days=n_days)
+            if result.get("actual_days"):  # never replace good data with a failed fetch
+                db_manager.write_snapshot(f"tw_institutional_{n_days}d", result, ttl_days=1)
+        except Exception as e:
+            logger.error("Failed to update tw_institutional_%dd: %s", n_days, e)
+
+    # ── Index month-end closes (backtest + verdict evidence) ──────────────────
+    # Bulk on first run: a delta write to an empty series keeps only 30 days.
+    for key, ticker in (("index_close_twii", "^TWII"), ("index_close_spx", "^GSPC")):
+        backfill = initial or db_manager.max_date(key) is None
+        _run(key, fetch_index_monthly_close, ttl_days=7, initial=backfill,
+             post_sleep=yf_sleep, ticker=ticker, years_back=15 if backfill else y)
 
     db_manager.cleanup_expired()
     logger.info("=== macro indicators complete ===")
@@ -326,17 +336,9 @@ def job_sector_and_13f(*, initial: bool = False) -> None:
     # 13F smart money — quarterly snapshot, always stored as blob regardless of mode
     try:
         smart = fetch_13f_smart_money(n_top=20)
-        rows = []
-        for entry in smart.get("top_buy_shares", []):
-            rows.append({"type": "buy_shares",  "name": entry[0],
-                         "delta": entry[1], "n_funds": entry[2]})
-        for entry in smart.get("top_sell_shares", []):
-            rows.append({"type": "sell_shares", "name": entry[0],
-                         "delta": entry[1], "n_funds": entry[2]})
-        if rows:
-            df = pd.DataFrame(rows)
-            db_manager.write("13f_smart_money", df, ttl_days=7)
-            logger.info("%-5s %-32s %d rows", "BLOB", "13f_smart_money", len(df))
+        if smart.get("fund_count"):
+            db_manager.write_snapshot("13f_smart_money", smart, ttl_days=7)
+            logger.info("%-5s %-32s %s funds", "BLOB", "13f_smart_money", smart["fund_count"])
     except Exception as e:
         logger.error("Failed to update 13f_smart_money: %s", e)
 

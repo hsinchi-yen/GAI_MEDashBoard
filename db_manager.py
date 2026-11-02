@@ -31,7 +31,9 @@ eMMC tuning applied at every connection open
 from __future__ import annotations
 
 import io
+import json
 import logging
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -40,7 +42,8 @@ import pandas as pd
 
 logger = logging.getLogger("gai_me.db")
 
-_DB_PATH = Path(__file__).parent / "app_data" / "db" / "indicator_cache.sqlite3"
+_DB_PATH = Path(os.environ.get("GMI_DB_PATH")
+                or Path(__file__).parent / "app_data" / "db" / "indicator_cache.sqlite3")
 
 DELTA_DAYS: int = 30        # daily scheduler writes only last N days to ts_rows
 HISTORY_YEARS: int = 15     # trim_to_window() retains up to this many years
@@ -96,13 +99,42 @@ _PRAGMAS = (
 
 # ── connection ────────────────────────────────────────────────────────────────
 
-def _conn() -> sqlite3.Connection:
-    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(_DB_PATH))
-    for p in _PRAGMAS:
-        con.execute(p)
+# Databases whose schema has been verified by this process. A page load opens one
+# connection per indicator, so re-running the DDL each time was wasted work (and
+# needless writes to eMMC).
+_schema_ready: set[str] = set()
+
+
+def _init_schema(con: sqlite3.Connection) -> None:
     con.executescript(_DDL)
     con.commit()
+
+
+class _ClosingConnection(sqlite3.Connection):
+    """`with _conn() as con:` commits and then really closes.
+
+    sqlite3's own context manager only commits, so every read leaked a connection
+    (with its 16 MB page cache and 64 MB mmap) until garbage collection.
+    """
+
+    def __exit__(self, *exc):
+        try:
+            return super().__exit__(*exc)
+        finally:
+            self.close()
+
+
+def _conn() -> sqlite3.Connection:
+    path = str(_DB_PATH)
+    first_use = path not in _schema_ready or not _DB_PATH.exists()
+    if first_use:
+        _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(path, factory=_ClosingConnection)
+    for p in _PRAGMAS:
+        con.execute(p)
+    if first_use:
+        _init_schema(con)
+        _schema_ready.add(path)
     return con
 
 
@@ -443,6 +475,97 @@ def _read_legacy(key: str) -> pd.DataFrame | None:
         return None
 
 
+# ── snapshots (dicts of plain values and DataFrames) ──────────────────────────
+
+_SNAPSHOT_PREFIX = "snapshot:"
+_FRAME_TAG = "__frame__"
+
+
+def _encode_snapshot(value):
+    if isinstance(value, pd.DataFrame):
+        # Stringify via orient=split with dtype-free columns so codes such as
+        # "0050" keep their leading zero on the way back.
+        return {_FRAME_TAG: True, "columns": list(value.columns),
+                "data": json.loads(value.to_json(orient="values", date_format="iso"))}
+    if isinstance(value, dict):
+        return {k: _encode_snapshot(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_encode_snapshot(v) for v in value]
+    return value
+
+
+def _decode_snapshot(value):
+    if isinstance(value, dict):
+        if value.get(_FRAME_TAG):
+            return pd.DataFrame(value["data"], columns=value["columns"])
+        return {k: _decode_snapshot(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_decode_snapshot(v) for v in value]
+    return value
+
+
+def write_snapshot(key: str, payload: dict, ttl_days: int = 1) -> None:
+    """Store a whole fetcher result so the UI can serve it without any network.
+
+    An empty payload is ignored: a failed fetch must not erase the last good data.
+    """
+    if not payload:
+        return
+    try:
+        body = json.dumps(_encode_snapshot(payload), ensure_ascii=False)
+        with _conn() as con:
+            con.execute(
+                "INSERT OR REPLACE INTO blob_cache"
+                " (cache_key, payload_json, fetched_at, ttl_seconds) VALUES (?,?,?,?)",
+                (_SNAPSHOT_PREFIX + key, body, int(time.time()), ttl_days * 86400),
+            )
+    except Exception as e:
+        logger.error("snapshot write failed [%s]: %s", key, e)
+
+
+def read_snapshot(key: str) -> dict | None:
+    """Return a stored snapshot regardless of age (serve-stale), or None."""
+    try:
+        with _conn() as con:
+            row = con.execute("SELECT payload_json FROM blob_cache WHERE cache_key=?",
+                              (_SNAPSHOT_PREFIX + key,)).fetchone()
+        return _decode_snapshot(json.loads(row[0])) if row else None
+    except Exception as e:
+        logger.warning("snapshot read failed [%s]: %s", key, e)
+        return None
+
+
+def snapshot_age_hours(key: str) -> float | None:
+    with _conn() as con:
+        row = con.execute("SELECT fetched_at FROM blob_cache WHERE cache_key=?",
+                          (_SNAPSHOT_PREFIX + key,)).fetchone()
+    return None if row is None else (time.time() - row[0]) / 3600
+
+
+def data_version() -> str:
+    """Token that changes whenever the scheduler writes; used as a UI cache key."""
+    try:
+        with _conn() as con:
+            ts = con.execute("SELECT COUNT(*), COALESCE(SUM(last_updated), 0) FROM ts_meta").fetchone()
+            blob = con.execute("SELECT COUNT(*), COALESCE(SUM(fetched_at), 0) FROM blob_cache").fetchone()
+    except sqlite3.OperationalError as e:   # e.g. another process is creating the DB
+        logger.warning("data_version unavailable: %s", e)
+        return "unavailable"
+    return f"{ts[0]}.{ts[1]}.{blob[0]}.{blob[1]}"
+
+
+def replace_series(key: str, df: pd.DataFrame, ttl_days: int = 1) -> None:
+    """Swap a whole {date, value} series, for when old rows carry wrong dates.
+
+    An empty frame is ignored so a failed fetch cannot wipe the history.
+    """
+    if df is None or df.empty:
+        return
+    with _conn() as con:
+        con.execute("DELETE FROM ts_rows WHERE indicator_id=?", (key,))
+    _write_ts_bulk(key, df, ttl_days)
+
+
 # ── freshness & maintenance ───────────────────────────────────────────────────
 
 def is_fresh(key: str) -> bool:
@@ -503,7 +626,9 @@ def cleanup_expired() -> int:
         now = int(time.time())
         with _conn() as con:
             cur = con.execute(
-                "DELETE FROM blob_cache WHERE (? - fetched_at) > ttl_seconds", (now,)
+                "DELETE FROM blob_cache WHERE (? - fetched_at) > ttl_seconds"
+                " AND cache_key NOT LIKE ?",   # snapshots are served stale on purpose
+                (now, _SNAPSHOT_PREFIX + "%"),
             )
         n = cur.rowcount
         if n:

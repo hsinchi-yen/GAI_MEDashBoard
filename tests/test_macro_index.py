@@ -57,10 +57,10 @@ def _full_data() -> dict:
     pmi_down = make_df([53.0, 52.0, 51.0])   # >50, slope down → score=0
     yoy_pos  = make_df([2.0, 3.0, 4.0])       # positive, improving → score=1
     yoy_neg  = make_df([-2.0, -1.5, -1.0])   # negative → score=0
-    hy_fall  = make_df([400.0, 380.0, 360.0]) # falling → score=1
+    hy_fall  = make_df([420.0, 400.0, 380.0, 360.0]) # falling → score=1
     t10y3m   = make_df([0.10, 0.20, 0.30])    # >0, slope up → score=1
-    vix_fall = make_df([28.0, 24.0, 20.0])    # falling → score=1
-    twd_fall = make_df([32.0, 31.5, 31.0])    # falling (TWD appreciating) → score=1
+    vix_fall = make_df([32.0, 28.0, 24.0, 20.0])    # falling → score=1
+    twd_fall = make_df([32.5, 32.0, 31.5, 31.0])    # falling (TWD appreciating) → score=1
     rot_up   = make_df([0.01, 0.02, 0.03])    # >0, slope up → score=1
 
     return {
@@ -172,7 +172,7 @@ class TestHasDataField:
         assert hd is False
 
     def test_twd_appreciating_has_data(self):
-        _, _, _, _, hd = _sig_twd_appreciating(make_df([32.0, 31.5, 31.0]))
+        _, _, _, _, hd = _sig_twd_appreciating(make_df([32.5, 32.0, 31.5, 31.0]))
         assert hd is True
 
     def test_rotation_has_data_when_df_present(self):
@@ -235,31 +235,31 @@ class TestSignalScoring:
         assert s == 1
 
     def test_scissors_score_1_when_gap_narrowing(self):
-        scissors = make_df([2.0, 1.5, 1.0])  # positive but falling
+        scissors = make_df([2.5, 2.0, 1.5, 1.0])  # positive but falling
         s, *_ = _sig_scissors_narrowing(None, None, scissors_df=scissors)
         assert s == 1
 
     def test_scissors_score_0_when_gap_positive_and_widening(self):
-        scissors = make_df([1.0, 1.5, 2.0])  # positive and rising → no signal
+        scissors = make_df([0.5, 1.0, 1.5, 2.0])  # positive and rising → no signal
         s, *_ = _sig_scissors_narrowing(None, None, scissors_df=scissors)
         assert s == 0
 
     # VIX down
     def test_vix_score_1_when_3m_falling(self):
-        s, *_ = _sig_vix_down(make_df([28.0, 24.0, 20.0]))
+        s, *_ = _sig_vix_down(make_df([32.0, 28.0, 24.0, 20.0]))
         assert s == 1
 
     def test_vix_score_0_when_3m_rising(self):
-        s, *_ = _sig_vix_down(make_df([18.0, 22.0, 26.0]))
+        s, *_ = _sig_vix_down(make_df([14.0, 18.0, 22.0, 26.0]))
         assert s == 0
 
     # TWD appreciating (lower USD/TWD = TWD up)
     def test_twd_score_1_when_rate_falling(self):
-        s, *_ = _sig_twd_appreciating(make_df([32.0, 31.5, 31.0]))
+        s, *_ = _sig_twd_appreciating(make_df([32.5, 32.0, 31.5, 31.0]))
         assert s == 1
 
     def test_twd_score_0_when_rate_rising(self):
-        s, *_ = _sig_twd_appreciating(make_df([30.0, 31.0, 32.0]))
+        s, *_ = _sig_twd_appreciating(make_df([29.0, 30.0, 31.0, 32.0]))
         assert s == 0
 
     # Rotation
@@ -295,11 +295,11 @@ class TestSignalScoring:
 
     # HY spread
     def test_hy_score_1_when_falling(self):
-        s, *_ = _sig_hy_spread_down(make_df([500.0, 450.0, 400.0]))
+        s, *_ = _sig_hy_spread_down(make_df([550.0, 500.0, 450.0, 400.0]))
         assert s == 1
 
     def test_hy_score_0_when_rising(self):
-        s, *_ = _sig_hy_spread_down(make_df([350.0, 400.0, 450.0]))
+        s, *_ = _sig_hy_spread_down(make_df([300.0, 350.0, 400.0, 450.0]))
         assert s == 0
 
     # 10Y-3M spread

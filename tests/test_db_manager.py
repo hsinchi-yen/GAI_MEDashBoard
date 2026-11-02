@@ -167,7 +167,7 @@ class TestSimpleTs:
     def test_delta_write_keeps_recent_rows(self):
         """Delta write should store rows within DELTA_DAYS window."""
         recent = pd.DataFrame({
-            "date":  pd.to_datetime(["2026-05-20", "2026-05-21"]),
+            "date":  pd.Timestamp.now().normalize() - pd.to_timedelta([2, 1], unit="D"),
             "value": [1.0, 2.0],
         })
         db_manager.write("ts_delta", recent, ttl_days=1, initial=False)
@@ -260,7 +260,7 @@ class TestGroupedTs:
 
     def test_delta_write_recent_rows_stored(self):
         df = pd.DataFrame({
-            "date": pd.to_datetime(["2026-05-22", "2026-05-22"]),
+            "date": [pd.Timestamp.now().normalize() - pd.Timedelta(days=1)] * 2,
             "sector_name": ["電子", "金融"],
             "close": [200.0, 150.0],
         })

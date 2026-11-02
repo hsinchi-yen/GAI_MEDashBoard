@@ -14,11 +14,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Application code
 COPY dashboard.py data_fetcher.py db_manager.py macro_index.py scheduler.py ./
 COPY fetchers/ fetchers/
-
-# Streamlit config: headless, port 8501, no telemetry
-RUN mkdir -p /root/.streamlit && \
-    printf '[server]\nheadless = true\nport = 8501\naddress = "0.0.0.0"\n\n[browser]\ngatherUsageStats = false\n' \
-    > /root/.streamlit/config.toml
+COPY analytics/ analytics/
+COPY ui/ ui/
+COPY .streamlit/ .streamlit/
 
 # Entrypoint: start background APScheduler daemon, then Streamlit as PID 1 child
 RUN printf '#!/bin/sh\nset -e\necho "[entrypoint] Starting scheduler..."\npython scheduler.py &\necho "[entrypoint] Starting Streamlit..."\nexec streamlit run dashboard.py\n' \

@@ -1,15 +1,16 @@
 """
 macro_index.py — Global Macro Index (GMI) scoring engine
 
-Computes a 20-indicator binary diffusion score that drives a traffic-light
+Computes a 19-indicator binary diffusion score that drives a traffic-light
 regime signal (Green / Yellow / Red) for the global macro dashboard.
 
 Architecture:
-    - 20 indicators in 4 groups (5 each), enforcing group-cap of 5.
-    - Each indicator outputs 0 or 1 each month.
-    - Score_t  = sum of all s_i,t  (max 20)
-    - Diffusion_t = Score_t / 20 * 100  (%)
-    - Regime:  Green >= 15 | Yellow 10-14 | Red <= 9
+    - 19 indicators in 4 groups (A:5, B:4, C:5, D:5), enforcing group-cap of 5.
+    - Each indicator outputs 0 or 1 each month. Trend rules are evaluated on
+      month-end observations, so daily series use true 3-month windows.
+    - Score_t  = sum of all s_i,t  (max 19)
+    - Diffusion_t = Score_t / valid indicators * 100  (%)
+    - Regime:  Green >= 75 % | Yellow 46-74 % | Red <= 45 %
     - Anti-whipsaw: regime switch requires 2 consecutive months.
     - Low-confidence flag when valid indicators < 16.
 
@@ -20,7 +21,6 @@ Usage:
 
 import pandas as pd
 import numpy as np
-from datetime import datetime
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -31,6 +31,7 @@ REGIME_GREEN  = 15   # (legacy, absolute) Score >= this → Green
 REGIME_RED    = 9    # (legacy, absolute) Score <= this → Red
 MIN_VALID     = 16   # Below this → Low Confidence flag
 MIN_REGIME    = 10   # Below this many valid indicators → regime 'unknown'
+TOTAL_INDICATORS = 19  # Scored indicators (id 10 was retired with the OECD CLI)
 SLOPE_MONTHS  = 3    # Window used for "3M slope" calculations
 GROUP_CAP     = 5    # Max effective score per group
 
@@ -41,6 +42,15 @@ GROUP_CAP     = 5    # Max effective score per group
 # cut-offs exactly (15/20 = 75 %, 9/20 = 45 %).
 REGIME_GREEN_PCT = 75.0   # diffusion >= this → Green (Expansion)
 REGIME_RED_PCT   = 45.0   # diffusion <= this → Red (Contraction)
+
+# Every series compute_macro_index() reads.
+GMI_INPUT_KEYS = (
+    "US_PMI", "TW_PMI", "CN_PMI", "EU_PMI", "US_NEW_ORDERS_YOY",
+    "TW_EXP_YOY", "KR_EXP_YOY", "US_RETAIL_YOY", "NDC_LEADING",
+    "US_CORE_CPI_YOY", "US_CORE_PPI_YOY", "CPI_PPI_SCISSORS", "CN_PPI_YOY",
+    "HY_SPREAD", "T10Y3M", "TW_M1B_YOY", "TW_M2_YOY",
+    "VIX", "TWD_USD", "COPPER_YOY", "SECTOR_ROTATION", "THIRTEENF_NET_ADD",
+)
 
 REGIME_LABELS = {
     "green":  "🟢 擴張 (Expansion)",
@@ -54,51 +64,85 @@ REGIME_LABELS = {
 # Utility helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _latest(df: pd.DataFrame) -> float | None:
-    """Return the most recent numeric value from a date-value DataFrame."""
+def _valid_arrays(df: pd.DataFrame | None) -> tuple[np.ndarray, np.ndarray]:
+    """Return (dates, values) with invalid rows removed, oldest first.
+
+    These helpers run thousands of times during a history rebuild, so they work
+    on numpy arrays: pandas dropna/sort_values/groupby cost milliseconds per call,
+    which added up to tens of seconds on every page load.
+    """
     if df is None or df.empty:
-        return None
-    v = df.sort_values("date").iloc[-1]["value"]
-    return float(v) if pd.notna(v) else None
+        return np.empty(0, dtype="datetime64[ns]"), np.empty(0, dtype=float)
+    dates = pd.to_datetime(df["date"], errors="coerce").to_numpy(dtype="datetime64[ns]")
+    values = pd.to_numeric(df["value"], errors="coerce").to_numpy(dtype=float)
+    keep = ~(np.isnat(dates) | np.isnan(values))
+    if not keep.all():
+        dates, values = dates[keep], values[keep]
+    if dates.size > 1 and (dates[1:] < dates[:-1]).any():
+        order = np.argsort(dates, kind="stable")
+        dates, values = dates[order], values[order]
+    return dates, values
+
+
+def _month_end_arrays(df: pd.DataFrame | None) -> tuple[np.ndarray, np.ndarray]:
+    """(dates, values) at the last valid observation of each month."""
+    dates, values = _valid_arrays(df)
+    if dates.size == 0:
+        return dates, values
+    months = dates.astype("datetime64[M]")
+    last_of_month = np.r_[months[1:] != months[:-1], True]
+    return dates[last_of_month], values[last_of_month]
+
+
+def _to_monthly(df: pd.DataFrame | None) -> pd.DataFrame:
+    """Collapse a {date, value} frame to the last valid observation of each month.
+
+    Every "3M" rule is expressed in months, but VIX, HY OAS, USD/TWD and T10Y3M
+    are daily FRED series. Windowing them by row count would turn "3M" into
+    "3 trading days", so all trend helpers work on month-end observations.
+    Series that are already monthly pass through unchanged.
+    """
+    dates, values = _month_end_arrays(df)
+    return pd.DataFrame({"date": dates, "value": values})
+
+
+def _latest(df: pd.DataFrame) -> float | None:
+    """Return the most recent valid value from a date-value DataFrame."""
+    _, values = _valid_arrays(df)
+    return float(values[-1]) if values.size else None
 
 
 def _slope_positive(df: pd.DataFrame, months: int = SLOPE_MONTHS) -> bool | None:
     """
-    Return True if the linear slope of the last `months` observations is positive.
+    Return True if the linear slope of the last `months` month-end observations is positive.
     Returns None if not enough data.
     """
-    if df is None or df.empty:
+    window = _month_end_arrays(df)[1][-months:]
+    if window.size < 2:
         return None
-    s = df.sort_values("date").tail(months)
-    if len(s) < 2:
-        return None
-    slope = np.polyfit(range(len(s)), s["value"].values, 1)[0]
-    return bool(slope > 0)
+    return bool(np.polyfit(np.arange(window.size), window, 1)[0] > 0)
 
 
 def _avg_improving(df: pd.DataFrame, months: int = SLOPE_MONTHS) -> bool | None:
     """
-    Compare rolling average of last `months` vs previous `months`.
+    Compare the average of the last `months` month-ends vs the previous `months`.
     True if the recent avg > prior avg.
     """
-    if df is None or df.empty:
+    values = _month_end_arrays(df)[1]
+    if values.size < months * 2:
         return None
-    s = df.sort_values("date")
-    if len(s) < months * 2:
-        return None
-    recent = s.tail(months)["value"].mean()
-    prior  = s.iloc[-(months * 2):-months]["value"].mean()
-    return bool(recent > prior)
+    return bool(values[-months:].mean() > values[-(months * 2):-months].mean())
 
 
 def _3m_down(df: pd.DataFrame) -> bool | None:
-    """True if the latest value is lower than 3M ago (drop = positive signal for risk-off indicators)."""
-    if df is None or df.empty:
+    """True if the latest month-end is below the month-end 3 months earlier.
+
+    A falling reading is the risk-on signal for VIX, HY OAS and USD/TWD.
+    """
+    values = _month_end_arrays(df)[1]
+    if values.size <= SLOPE_MONTHS:
         return None
-    s = df.sort_values("date")
-    if len(s) < SLOPE_MONTHS:
-        return None
-    return bool(s.iloc[-1]["value"] < s.iloc[-SLOPE_MONTHS]["value"])
+    return bool(values[-1] < values[-(SLOPE_MONTHS + 1)])
 
 
 def _score(condition) -> int:
@@ -190,6 +234,12 @@ def _truncate_frame(df: pd.DataFrame, as_of: pd.Timestamp) -> pd.DataFrame:
     """Return a copy of df truncated to observations on or before as_of."""
     if not isinstance(df, pd.DataFrame) or df.empty or "date" not in df.columns:
         return df
+    dates = df["date"]
+    if pd.api.types.is_datetime64_any_dtype(dates) and dates.is_monotonic_increasing:
+        # Sorted, clean frames (the normal case) slice without copying.
+        cut = np.searchsorted(dates.to_numpy(dtype="datetime64[ns]"),
+                              pd.Timestamp(as_of).as_unit("ns").to_datetime64(), side="right")
+        return df.iloc[:int(cut)]
     out = df.copy()
     out["date"] = pd.to_datetime(out["date"], errors="coerce")
     out = out.dropna(subset=["date"]).sort_values("date")
@@ -379,7 +429,7 @@ def compute_macro_index(data: dict) -> dict:
     Compute the Global Macro Index from the data dictionary produced by load_data().
 
     Returns a dict with keys:
-        score       int        0–20
+        score       int        0–19
         diffusion   float      0–100 (%)
         regime      str        'green' | 'yellow' | 'red' | 'unknown'
         regime_label str       Human-readable with emoji
@@ -481,7 +531,7 @@ def compute_macro_index(data: dict) -> dict:
     for key in ["US_PMI", "TW_PMI", "HY_SPREAD", "VIX"]:
         df = data.get(key)
         if df is not None and not df.empty:
-            as_of_dates.append(df.sort_values("date").iloc[-1]["date"])
+            as_of_dates.append(pd.Timestamp(df["date"].max()))
     as_of = max(as_of_dates).strftime("%Y-%m") if as_of_dates else "N/A"
 
     return {
@@ -522,8 +572,23 @@ def compute_macro_index_history(historical_data_list: list[dict]) -> pd.DataFram
 def build_macro_index_history(data: dict, lookback_years: int = 10) -> pd.DataFrame:
     """Recompute the macro index month by month from the currently loaded data series."""
     records = []
-    for as_of in _history_dates(data, lookback_years):
-        snapshot = _slice_data_as_of(data, as_of)
+    as_of_dates = _history_dates(data, lookback_years)
+
+    # Scoring is month-based and every as_of is a month-end, so collapse each input
+    # once up front; each snapshot is then just a cheap prefix slice.
+    frames: dict[str, pd.DataFrame] = {}
+    for key in GMI_INPUT_KEYS:
+        value = data.get(key)
+        if isinstance(value, pd.DataFrame) and not value.empty and "value" in value.columns:
+            frames[key] = _to_monthly(value)
+    positions = {key: frame["date"].to_numpy(dtype="datetime64[ns]") for key, frame in frames.items()}
+
+    for as_of in as_of_dates:
+        stamp = pd.Timestamp(as_of).as_unit("ns").to_datetime64()
+        snapshot = {
+            key: frame.iloc[:int(np.searchsorted(positions[key], stamp, side="right"))]
+            for key, frame in frames.items()
+        }
         result = compute_macro_index(snapshot)
         records.append({
             "date": as_of,
