@@ -127,3 +127,13 @@ class TestSnapshotSlicing:
         df = pd.DataFrame({"date": pd.to_datetime(["2026-03-01", "2026-01-01", "2026-02-01"]),
                            "value": [3.0, 1.0, 2.0]})
         assert mi._truncate_frame(df, pd.Timestamp("2026-02-15"))["value"].tolist() == [1.0, 2.0]
+
+
+class TestFastPathsKeepSemantics:
+    def test_string_dates_and_values_still_parse(self):
+        df = pd.DataFrame({"date": ["2026-01-01", "2026-02-01", "bad"], "value": ["1", "2", "3"]})
+        assert mi._to_monthly(df)["value"].tolist() == [1.0, 2.0]
+
+    def test_integer_values_are_accepted(self):
+        df = pd.DataFrame({"date": pd.date_range("2026-01-01", periods=2, freq="MS"), "value": [1, 2]})
+        assert mi._latest(df) == 2.0

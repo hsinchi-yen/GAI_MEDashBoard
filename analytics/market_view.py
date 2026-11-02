@@ -19,7 +19,7 @@ import math
 import numpy as np
 import pandas as pd
 
-from analytics.indicators import THEMES
+from analytics.indicators import REGISTRY, STALE_DAYS, THEMES
 from analytics.trend import breadth, build_radar
 from macro_index import (
     MIN_VALID, REGIME_GREEN_PCT, REGIME_LABELS, REGIME_RED_PCT, TOTAL_INDICATORS,
@@ -178,52 +178,67 @@ def flip_distance(gmi: dict) -> dict:
 _LEVEL_RANK = {"alert": 0, "watch": 1}
 
 
-def _latest_value(data: dict, key: str) -> float | None:
-    months = _to_monthly(data.get(key)) if isinstance(data.get(key), pd.DataFrame) else None
-    return None if months is None or months.empty else float(months.iloc[-1]["value"])
+def _current_months(data: dict, key: str, now: pd.Timestamp) -> pd.DataFrame | None:
+    """Month-end series, or None when its newest point is too old to alert on.
 
-
-def _pct_change_3m(data: dict, key: str) -> float | None:
+    A warning reads as "this is happening now", so a dead feed must not raise one.
+    """
     df = data.get(key)
-    months = _to_monthly(df) if isinstance(df, pd.DataFrame) else None
+    if not isinstance(df, pd.DataFrame):
+        return None
+    months = _to_monthly(df)
+    if months.empty:
+        return None
+    age = (now - months.iloc[-1]["date"]).days
+    return None if age > STALE_DAYS[REGISTRY[key].freq] else months
+
+
+def _latest_value(data: dict, key: str, now: pd.Timestamp) -> float | None:
+    months = _current_months(data, key, now)
+    return None if months is None else float(months.iloc[-1]["value"])
+
+
+def _pct_change_3m(data: dict, key: str, now: pd.Timestamp) -> float | None:
+    months = _current_months(data, key, now)
     if months is None or len(months) <= LOOKBACK_MONTHS:
         return None
     old = float(months.iloc[-(LOOKBACK_MONTHS + 1)]["value"])
     return None if old == 0 else (float(months.iloc[-1]["value"]) / old - 1) * 100
 
 
-def risk_alerts(data: dict) -> list[dict]:
+def risk_alerts(data: dict, now: pd.Timestamp | None = None) -> list[dict]:
     """Threshold-based warnings, most severe first. Calm markets return []."""
+    now = pd.Timestamp(now) if now is not None else pd.Timestamp.now()
     alerts: list[dict] = []
 
     def add(key: str, level: str, title: str, message: str) -> None:
         alerts.append({"key": key, "level": level, "title": title, "message": message})
 
-    vix = _latest_value(data, "VIX")
+    vix = _latest_value(data, "VIX", now)
     if vix is not None and vix >= 30:
         add("VIX", "alert", f"VIX {vix:.1f}", "市場進入壓力區，波動放大時避免追價")
     elif vix is not None and vix >= 20:
         add("VIX", "watch", f"VIX {vix:.1f}", "波動高於常態，留意是否續升破 30")
 
-    hy = _latest_value(data, "HY_SPREAD")
+    hy = _latest_value(data, "HY_SPREAD", now)
     if hy is not None and hy >= 500:
         add("HY_SPREAD", "alert", f"HY 利差 {hy:.0f} bps", "信用市場定價衰退風險，股市常滯後反映")
     elif hy is not None and hy >= 400:
         add("HY_SPREAD", "watch", f"HY 利差 {hy:.0f} bps", "信用條件轉緊，觀察是否續擴")
 
-    curve = _latest_value(data, "T10Y3M")
+    curve = _latest_value(data, "T10Y3M", now)
     if curve is not None and curve < 0:
         add("T10Y3M", "alert", f"10Y-3M {curve:+.2f} pp", "殖利率曲線倒掛，歷史上領先美國衰退")
 
-    pmi = _latest_value(data, "US_PMI")
+    pmi = _latest_value(data, "US_PMI", now)
     if pmi is not None and pmi < 48:
         add("US_PMI", "watch", f"美國 PMI {pmi:.1f}", "製造業明顯收縮")
 
-    dollar = _pct_change_3m(data, "DXY")
+    dollar = _pct_change_3m(data, "DXY", now)
     if dollar is not None and dollar >= 3:
         add("DXY", "watch", f"美元 3M {dollar:+.1f}%", "美元急升壓縮新興市場資金空間")
 
-    real = _latest_value(data, "US_REAL_RATE")
+    real = _latest_value(data, "US_REAL_RATE", now)
     if real is not None and real >= 2.5:
         add("US_REAL_RATE", "watch", f"實質利率 {real:.2f}%", "高折現率壓抑成長股估值")
 
@@ -425,7 +440,7 @@ def compute_market_view(data: dict, history: pd.DataFrame | None = None,
         "missing":        [s for s in gmi["signals"] if not s["has_data"]],
         "changes":        _signal_changes(gmi, gmi_prev),
         "flip":           flip_distance(gmi),
-        "alerts":         risk_alerts(data),
+        "alerts":         risk_alerts(data, now),
         "clock":          investment_clock(data),
         "playbook":       PLAYBOOK[stance["key"]],
         "radar":          radar,

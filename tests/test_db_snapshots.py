@@ -108,3 +108,18 @@ class TestConnectionSetup:
         db_manager.list_keys()
         db_manager._DB_PATH.unlink()
         assert db_manager.list_keys() == []
+
+
+def test_read_returns_real_dates_for_time_series():
+    df = pd.DataFrame({"date": pd.to_datetime(["2024-02-29", "2024-03-01"]), "value": [1.0, 2.0]})
+    db_manager.write("dated", df, ttl_days=1, initial=True)
+    out = db_manager.read("dated")
+    assert out["date"].tolist() == df["date"].tolist()
+    assert pd.api.types.is_datetime64_any_dtype(out["date"])
+
+
+def test_grouped_read_returns_real_dates():
+    df = pd.DataFrame({"date": pd.to_datetime(["2024-02-29", "2024-02-29"]),
+                       "sector_name": ["A", "B"], "close": [1.0, 2.0]})
+    db_manager.write("grouped", df, ttl_days=1, initial=True)
+    assert db_manager.read("grouped")["date"].unique().tolist() == [pd.Timestamp("2024-02-29")]

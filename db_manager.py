@@ -419,7 +419,7 @@ def _read_ts(key: str) -> pd.DataFrame | None:
             if not rows:
                 return None
             df = pd.DataFrame(rows, columns=["day_epoch", "value"])
-            df["date"] = df["day_epoch"].map(_from_day)
+            df["date"] = pd.to_datetime(df["day_epoch"] * 86_400, unit="s")
             return df[["date", "value"]].reset_index(drop=True)
         else:
             # Grouped time series → {date, series_key, value}
@@ -431,7 +431,7 @@ def _read_ts(key: str) -> pd.DataFrame | None:
             if not rows:
                 return None
             df = pd.DataFrame(rows, columns=["series_key", "day_epoch", "value"])
-            df["date"] = df["day_epoch"].map(_from_day)
+            df["date"] = pd.to_datetime(df["day_epoch"] * 86_400, unit="s")
             return df[["date", "series_key", "value"]].reset_index(drop=True)
 
 

@@ -16,6 +16,9 @@ def monthly(values, end="2026-09-01") -> pd.DataFrame:
     return pd.DataFrame({"date": dates, "value": [float(v) for v in values]})
 
 
+FRESH = pd.Timestamp("2026-09-05")
+
+
 def gmi_stub(score: int, valid: int = 19) -> dict:
     return {"score": score, "valid_count": valid,
             "diffusion": round(score / valid * 100, 1) if valid else 0.0}
@@ -103,41 +106,51 @@ class TestFlipDistance:
 # ── Risk alerts ───────────────────────────────────────────────────────────────
 
 class TestRiskAlerts:
+    # Fixture series end 2026-09-01; daily gauges only count within ten days of that.
     def _levels(self, **kw):
         return {k: monthly([v] * 8) for k, v in kw.items()}
 
     def test_calm_market_has_no_alerts(self):
         data = self._levels(VIX=14, HY_SPREAD=300, T10Y3M=0.8, US_PMI=52)
-        assert mv.risk_alerts(data) == []
+        assert mv.risk_alerts(data, FRESH) == []
 
     def test_vix_tiers(self):
-        assert mv.risk_alerts(self._levels(VIX=24))[0]["level"] == "watch"
-        assert mv.risk_alerts(self._levels(VIX=35))[0]["level"] == "alert"
+        assert mv.risk_alerts(self._levels(VIX=24), FRESH)[0]["level"] == "watch"
+        assert mv.risk_alerts(self._levels(VIX=35), FRESH)[0]["level"] == "alert"
 
     def test_hy_spread_tiers_in_bps(self):
-        assert mv.risk_alerts(self._levels(HY_SPREAD=450))[0]["level"] == "watch"
-        assert mv.risk_alerts(self._levels(HY_SPREAD=620))[0]["level"] == "alert"
+        assert mv.risk_alerts(self._levels(HY_SPREAD=450), FRESH)[0]["level"] == "watch"
+        assert mv.risk_alerts(self._levels(HY_SPREAD=620), FRESH)[0]["level"] == "alert"
 
     def test_inverted_curve_alerts(self):
-        out = mv.risk_alerts(self._levels(T10Y3M=-0.4))
+        out = mv.risk_alerts(self._levels(T10Y3M=-0.4), FRESH)
         assert out[0]["level"] == "alert"
         assert "倒掛" in out[0]["message"]
 
     def test_pmi_contraction_watch(self):
-        out = mv.risk_alerts(self._levels(US_PMI=47))
+        out = mv.risk_alerts(self._levels(US_PMI=47), FRESH)
         assert out[0]["level"] == "watch"
 
     def test_dollar_surge_uses_three_month_change(self):
         data = {"DXY": monthly([100, 100, 100, 100, 100, 101, 103, 106])}
-        out = mv.risk_alerts(data)
+        out = mv.risk_alerts(data, FRESH)
         assert out and out[0]["key"] == "DXY"
 
     def test_alerts_sort_most_severe_first(self):
-        out = mv.risk_alerts(self._levels(VIX=24, HY_SPREAD=620))
+        out = mv.risk_alerts(self._levels(VIX=24, HY_SPREAD=620), FRESH)
         assert [a["level"] for a in out] == ["alert", "watch"]
 
+    def test_dead_feed_raises_no_alert(self):
+        """Production showed "US PMI 47.9" from a feed that stopped ten months earlier."""
+        data = {"US_PMI": monthly([47.9] * 8, end="2025-12-01")}
+        assert mv.risk_alerts(data, pd.Timestamp("2026-11-02")) == []
+
+    def test_normal_publication_lag_still_alerts(self):
+        data = {"US_PMI": monthly([47.9] * 8, end="2026-09-01")}
+        assert mv.risk_alerts(data, pd.Timestamp("2026-11-02"))
+
     def test_missing_series_are_skipped(self):
-        assert mv.risk_alerts({}) == []
+        assert mv.risk_alerts({}, FRESH) == []
 
 
 # ── Investment clock ──────────────────────────────────────────────────────────

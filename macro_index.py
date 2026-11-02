@@ -73,8 +73,14 @@ def _valid_arrays(df: pd.DataFrame | None) -> tuple[np.ndarray, np.ndarray]:
     """
     if df is None or df.empty:
         return np.empty(0, dtype="datetime64[ns]"), np.empty(0, dtype=float)
-    dates = pd.to_datetime(df["date"], errors="coerce").to_numpy(dtype="datetime64[ns]")
-    values = pd.to_numeric(df["value"], errors="coerce").to_numpy(dtype=float)
+    # to_datetime/to_numeric dominate the cost on ARM, and history frames are clean.
+    raw_dates, raw_values = df["date"], df["value"]
+    if not pd.api.types.is_datetime64_any_dtype(raw_dates):
+        raw_dates = pd.to_datetime(raw_dates, errors="coerce")
+    if not pd.api.types.is_float_dtype(raw_values):
+        raw_values = pd.to_numeric(raw_values, errors="coerce")
+    dates = raw_dates.to_numpy(dtype="datetime64[ns]")
+    values = raw_values.to_numpy(dtype=float)
     keep = ~(np.isnat(dates) | np.isnan(values))
     if not keep.all():
         dates, values = dates[keep], values[keep]
