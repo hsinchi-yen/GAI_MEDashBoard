@@ -78,6 +78,21 @@ class TestYahooTimezone:
         assert out.iloc[-1]["date"].month == months[-1].month + 1 if months[-1].month < 12 else 1
 
 
+class TestIndexYoyIsMonthly:
+    def test_running_bar_does_not_add_a_row_per_day(self):
+        """Production held 278 rows for a ~175-month series."""
+        months = pd.date_range("2024-01-01 16:00", periods=14, freq="MS")
+        stamps = [int(pd.Timestamp(m, tz="UTC").timestamp()) for m in months]
+        payload = yahoo_payload(stamps, [100.0 + i for i in range(14)], gmtoffset=8 * 3600)
+        with patch.object(yf, "_yf_chart", return_value=payload):
+            first = yf.fetch_index_yoy("^TWII", years_back=20)
+        stamps[-1] += 5 * 86400   # the same month's bar, five days later
+        with patch.object(yf, "_yf_chart", return_value=payload):
+            second = yf.fetch_index_yoy("^TWII", years_back=20)
+        assert first["date"].tolist() == second["date"].tolist()
+        assert (second["date"].dt.day == 1).all()
+
+
 class TestMomentumWindow:
     def test_compares_three_months_of_prints_despite_publication_lag(self):
         """On Nov 2 the latest PMI is October; momentum must reach back to July, not August."""
@@ -206,3 +221,37 @@ def test_history_rows_stay_consistent_with_settled_regime():
     history = build_macro_index_history(data, lookback_years=2)
     view = mv.compute_market_view(data, history=history, now=NOW)
     assert view["regime"] in {"green", "yellow", "red"}
+
+
+class TestPostDeployPurge:
+    def _tool(self):
+        import importlib.util
+        from pathlib import Path
+        path = Path(__file__).resolve().parent.parent / "tools" / "post_deploy.py"
+        spec = importlib.util.spec_from_file_location("post_deploy", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def _seed(self):
+        series = pd.DataFrame({"date": pd.date_range("2024-01-01", periods=3), "value": [1.0, 2.0, 3.0]})
+        db_manager.write("dff", series, ttl_days=1, initial=True)
+        db_manager.write("vix", series, ttl_days=1, initial=True)
+        db_manager.write("13f_smart_money", pd.DataFrame({"a": ["x"], "b": ["y"]}), ttl_days=1)
+        db_manager.write_snapshot("13f_smart_money", {"fund_count": 18})
+
+    def test_report_changes_nothing(self, isolated_db, capsys):
+        self._seed()
+        tool = self._tool()
+        tool.report()
+        assert "dff" in capsys.readouterr().out
+        assert db_manager.read("dff") is not None
+        assert tool.legacy_rows()
+
+    def test_purge_removes_only_the_listed_keys(self, isolated_db):
+        self._seed()
+        tool = self._tool()
+        assert tool.purge_legacy() == 4   # 1 blob + 3 dff rows
+        assert db_manager.read("dff") is None
+        assert len(db_manager.read("vix")) == 3
+        assert db_manager.read_snapshot("13f_smart_money") == {"fund_count": 18}

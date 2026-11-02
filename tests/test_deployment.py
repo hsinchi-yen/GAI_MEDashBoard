@@ -68,9 +68,12 @@ def test_post_deploy_purge_list_is_not_read_by_the_app():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     source = (ROOT / "dashboard.py").read_text(encoding="utf-8")
-    for key in module.LEGACY_BLOBS:
+    scheduler = (ROOT / "scheduler.py").read_text(encoding="utf-8")
+    for key in module.LEGACY_BLOBS + module.LEGACY_SERIES:
         assert f'db_manager.read("{key}")' not in source
         assert f"R('{key}')" not in source
+    for key in module.LEGACY_SERIES:
+        assert f'"{key}"' not in scheduler  # otherwise the next job writes it back
 
 
 def test_dockerignore_keeps_the_runtime_files():

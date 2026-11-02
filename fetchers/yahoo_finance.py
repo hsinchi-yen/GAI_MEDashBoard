@@ -78,6 +78,10 @@ def fetch_index_yoy(ticker: str, years_back: int = 12) -> pd.DataFrame:
         return pd.DataFrame()
     df = pd.DataFrame({"date": _bar_dates(raw), "value": closes})
     df = df.dropna().sort_values("date")
+    # The running bar is stamped with today's date, so without this every daily
+    # refresh would add another row for the same month.
+    df["date"] = df["date"].dt.to_period("M").dt.to_timestamp()
+    df = df.drop_duplicates("date", keep="last")
     cutoff = pd.Timestamp.now() - pd.DateOffset(years=years_back + 1)
     return compute_yoy(df[df["date"] >= cutoff])
 

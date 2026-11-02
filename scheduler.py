@@ -153,7 +153,6 @@ def job_macro_indicators(*, initial: bool = False) -> None:
             ("DGS10",         "dgs10"),
             ("T10YIE",        "t10y_bei"),
             ("T10Y2Y",        "t10y2y"),
-            ("DFF",           "dff"),
             ("M1SL",          "us_m1"),
             ("BAMLH0A0HYM2",  "hy_spread"),
             ("DEXTAUS",       "twd_usd"),

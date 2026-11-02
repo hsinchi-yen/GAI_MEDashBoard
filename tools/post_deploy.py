@@ -4,8 +4,8 @@
     python post_deploy.py --backfill       # fill snapshots, re-date Asian indices
     python post_deploy.py --purge          # delete the legacy keys listed by the report
 
-The purge only touches LEGACY_BLOBS, an explicit list of keys this release
-replaced. It never guesses from a pattern.
+The purge only touches LEGACY_BLOBS and LEGACY_SERIES, explicit lists of keys this
+release retired. It never guesses from a pattern.
 """
 from __future__ import annotations
 
@@ -26,6 +26,9 @@ LEGACY_BLOBS = (
     "tw_institutional_5d.top30_buy", "tw_institutional_5d.top30_sell",
     "tw_institutional_20d.top30_buy", "tw_institutional_20d.top30_sell",
 )
+
+# Written daily but never read: the UI uses the monthly fed_funds_rate instead.
+LEGACY_SERIES = ("dff",)
 
 # Bars were stored under the previous UTC day, so these rows sit a month early and
 # would duplicate new rows. (key, ticker)
@@ -50,11 +53,25 @@ def legacy_table_rows() -> int:
         return con.execute("SELECT COUNT(*) FROM indicator_cache").fetchone()[0]
 
 
-def purge_legacy() -> int:
-    marks = ",".join("?" * len(LEGACY_BLOBS))
+def legacy_series_rows() -> list[tuple[str, int]]:
+    marks = ",".join("?" * len(LEGACY_SERIES))
     with db_manager._conn() as con:
-        return con.execute(f"DELETE FROM blob_cache WHERE cache_key IN ({marks})",
-                           LEGACY_BLOBS).rowcount
+        return con.execute(
+            f"SELECT indicator_id, COUNT(*) FROM ts_rows WHERE indicator_id IN ({marks})"
+            " GROUP BY indicator_id", LEGACY_SERIES,
+        ).fetchall()
+
+
+def purge_legacy() -> int:
+    blob_marks = ",".join("?" * len(LEGACY_BLOBS))
+    series_marks = ",".join("?" * len(LEGACY_SERIES))
+    with db_manager._conn() as con:
+        removed = con.execute(f"DELETE FROM blob_cache WHERE cache_key IN ({blob_marks})",
+                              LEGACY_BLOBS).rowcount
+        removed += con.execute(f"DELETE FROM ts_rows WHERE indicator_id IN ({series_marks})",
+                               LEGACY_SERIES).rowcount
+        con.execute(f"DELETE FROM ts_meta WHERE indicator_id IN ({series_marks})", LEGACY_SERIES)
+    return removed
 
 
 def report() -> None:
@@ -64,6 +81,7 @@ def report() -> None:
         print(f"  {key}  {size} bytes")
     if not rows:
         print("  none")
+    print(f"legacy series: {legacy_series_rows() or 'none'}")
     print(f"legacy indicator_cache rows: {legacy_table_rows()}")
     for key in ("13f_smart_money", "tw_institutional_5d", "tw_institutional_20d"):
         age = db_manager.snapshot_age_hours(key)
@@ -105,7 +123,7 @@ def main() -> None:
     if args.backfill:
         backfill()
     if args.purge:
-        print(f"purged {purge_legacy()} legacy blobs")
+        print(f"purged {purge_legacy()} legacy rows")
     report()
 
 
