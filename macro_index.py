@@ -1,14 +1,14 @@
 """
 macro_index.py — Global Macro Index (GMI) scoring engine
 
-Computes a 19-indicator binary diffusion score that drives a traffic-light
+Computes a 20-indicator binary diffusion score that drives a traffic-light
 regime signal (Green / Yellow / Red) for the global macro dashboard.
 
 Architecture:
-    - 19 indicators in 4 groups (A:5, B:4, C:5, D:5), enforcing group-cap of 5.
+    - 20 indicators in 4 groups (A:5, B:4, C:5, D:6), each capped at GROUP_CAPS.
     - Each indicator outputs 0 or 1 each month. Trend rules are evaluated on
       month-end observations, so daily series use true 3-month windows.
-    - Score_t  = sum of all s_i,t  (max 19)
+    - Score_t  = sum of all s_i,t  (max 20)
     - Diffusion_t = Score_t / valid indicators * 100  (%)
     - Regime:  Green >= 75 % | Yellow 46-74 % | Red <= 45 %
     - Anti-whipsaw: regime switch requires 2 consecutive months.
@@ -31,9 +31,11 @@ REGIME_GREEN  = 15   # (legacy, absolute) Score >= this → Green
 REGIME_RED    = 9    # (legacy, absolute) Score <= this → Red
 MIN_VALID     = 16   # Below this → Low Confidence flag
 MIN_REGIME    = 10   # Below this many valid indicators → regime 'unknown'
-TOTAL_INDICATORS = 19  # Scored indicators (id 10 was retired with the OECD CLI)
+TOTAL_INDICATORS = 20  # Scored indicators (id 10 was retired with the OECD CLI)
 SLOPE_MONTHS  = 3    # Window used for "3M slope" calculations
-GROUP_CAP     = 5    # Max effective score per group
+# Max effective score per group. D holds six market gauges since VIXTWN (#21)
+# joined, so its cap rose to 6; otherwise all-positive could never reach 100 %.
+GROUP_CAPS    = {"A": 5, "B": 5, "C": 5, "D": 6}
 
 # Regime is decided on the diffusion *ratio* (valid positives / valid indicators),
 # NOT an absolute count. This stops missing indicators from being counted as
@@ -50,6 +52,7 @@ GMI_INPUT_KEYS = (
     "US_CORE_CPI_YOY", "US_CORE_PPI_YOY", "CPI_PPI_SCISSORS", "CN_PPI_YOY",
     "HY_SPREAD", "T10Y3M", "TW_M1B_YOY", "TW_M2_YOY",
     "VIX", "TWD_USD", "COPPER_YOY", "SECTOR_ROTATION", "THIRTEENF_NET_ADD",
+    "VIXTWN",
 )
 
 REGIME_LABELS = {
@@ -385,6 +388,14 @@ def _sig_vix_down(df: pd.DataFrame):
     return _score(cond), raw, rule, "VIX", v is not None
 
 
+def _sig_vixtwn_down(df: pd.DataFrame):
+    """TAIWAN VIX: same rule as VIX, so Taiwan-specific stress counts on its own."""
+    cond = _3m_down(df) is True
+    v    = _latest(df)
+    raw  = f"{v:.2f}" if v is not None else "N/A"
+    return _score(cond), raw, "3M 點對點下降", "台指 VIX", v is not None
+
+
 def _sig_twd_appreciating(df: pd.DataFrame):
     """
     TWD/USD: lower value = TWD appreciating = risk-on for Taiwan.
@@ -435,7 +446,7 @@ def compute_macro_index(data: dict) -> dict:
     Compute the Global Macro Index from the data dictionary produced by load_data().
 
     Returns a dict with keys:
-        score       int        0–19
+        score       int        0–20
         diffusion   float      0–100 (%)
         regime      str        'green' | 'yellow' | 'red' | 'unknown'
         regime_label str       Human-readable with emoji
@@ -488,12 +499,13 @@ def compute_macro_index(data: dict) -> dict:
     _add("D", 18, _sig_yoy_positive(data.get("COPPER_YOY"), "銅價 YoY"))
     _add("D", 19, _sig_rotation_risk_on(data.get("SECTOR_ROTATION")))
     _add("D", 20, _sig_13f_cyclical_net_add(data.get("THIRTEENF_NET_ADD")))
+    _add("D", 21, _sig_vixtwn_down(data.get("VIXTWN")))
 
-    # ── Apply group cap (max 5 per group) ─────────────────────────────────────
+    # ── Apply group caps (GROUP_CAPS) ──────────────────────────────────────────
     group_scores = {}
     total_score  = 0
     for grp, scores in group_raw.items():
-        capped = min(sum(scores), GROUP_CAP)
+        capped = min(sum(scores), GROUP_CAPS[grp])
         group_scores[grp] = {"raw": sum(scores), "capped": capped}
         total_score += capped
 

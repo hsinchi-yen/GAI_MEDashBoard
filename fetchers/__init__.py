@@ -31,6 +31,8 @@ from .taiwan import (
     fetch_tsmc_revenue_yoy,
     fetch_taiex_yoy,
     fetch_tw_institutional,
+    fetch_vixtwn,
+    load_vixtwn_history,
 )
 
 from .global_macro import (
@@ -46,6 +48,7 @@ from .global_macro import (
 from .yahoo_finance import (
     fetch_index_yoy,
     fetch_index_monthly_close,
+    fetch_index_daily_close,
     fetch_vkospi,
     fetch_etf_bulk,
     fetch_sector_rotation,
@@ -80,11 +83,12 @@ __all__ = [
     # taiwan
     "fetch_taiwan_exports_amount", "fetch_cbc_money_supply", "fetch_taiwan_pmi",
     "fetch_tsmc_revenue_yoy", "fetch_taiex_yoy", "fetch_tw_institutional",
+    "fetch_vixtwn", "load_vixtwn_history",
     # global_macro
     "fetch_ism_pmi", "fetch_ndc_leading_index", "fetch_ndc_light_score", "fetch_china_nbs_pmi",
     "fetch_japan_economy_watchers", "fetch_china_nbs_ppi_yoy", "fetch_eurostat_ici",
     # yahoo_finance
-    "fetch_index_yoy", "fetch_index_monthly_close", "fetch_vkospi",
+    "fetch_index_yoy", "fetch_index_monthly_close", "fetch_index_daily_close", "fetch_vkospi",
     "fetch_etf_bulk", "fetch_sector_rotation",
     "fetch_13f_proxy", "SECTOR_ETFS",
     # edgar_13f

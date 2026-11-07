@@ -8,12 +8,12 @@
 | 頁面 | 回答的問題 |
 |------|------|
 | **今日判讀** | 五段式多空結論、四大支柱、操作框架、成長／通膨時鐘、風險警示、多空論據、距離燈號翻轉、歷史相同燈號後的報酬、可下載簡報 |
-| **趨勢雷達** | 38 項指標的方向、5 年位階、階段與轉折，可依訊號與類別篩選 |
+| **趨勢雷達** | 39 項指標的方向、5 年位階、階段與轉折，可依訊號與類別篩選 |
 | **需求與貿易** | 五國 PMI、美國零售、消費者信心、台灣／韓國出口、NDC 領先指標、台積電營收 |
 | **成本與獲利** | OECD CLI、庫存、半導體 PPI、實質利率、CPI/PPI 剪刀差、中國 PPI、原油、銅價 |
 | **流動性與風險** | VIX、殖利率曲線、M1B/M2、HY 信用利差、美元、台幣、中國信貸脈衝 |
-| **股市比對** | S&P 500 vs TAIEX、Fed 利率、10Y-3M、三大法人買賣超 |
-| **GMI 指數** | 19 項指標擴散歷史、明細與內部輪動 |
+| **股市比對** | S&P 500 vs TAIEX、Fed 利率、10Y-3M、台指 VIX × 加權指數、亞洲波動率比對、三大法人買賣超 |
+| **GMI 指數** | 20 項指標擴散歷史、明細與內部輪動 |
 | **台股資金輪動** | 19 類股四象限、動能熱力圖、法人資金流、13F Smart Money |
 | **燈號回測** | 各燈號後 1/3/6/12 月報酬分佈、領先落後相關矩陣 |
 | **使用指南** | 判讀方法、頁面導覽與限制 |
@@ -77,6 +77,7 @@ GMI_DB_PATH=app_data/db/demo.sqlite3 streamlit run dashboard.py
 |------|------|
 | 每日 02:00 | 所有總經指標（FRED、DBnomics、台灣官方、全球爬取、Yahoo） |
 | 每日 02:30 | 台股 19 類股指數 + 成交值 + 三大法人 |
+| 週一至週五 17:00 | 台指 VIX（期交所約 16:10 公布）+ 加權指數日收 |
 | 週一 / 週四 06:00 | 美國 ETF 類股輪動 + SEC EDGAR 13F |
 | 每月 1 日 03:00 | DB 維護（15 年歷史修剪 + WAL checkpoint） |
 
@@ -264,7 +265,8 @@ SQLite 檔案：`/root/macro_dashboard_data/db/indicator_cache.sqlite3`
 | [Yahoo Finance](https://finance.yahoo.com/) | TAIEX / N225 / KOSPI / HSI / CSI300 YoY、ETF 量能 |
 | [FRED](https://fred.stlouisfed.org/) | VIX、殖利率曲線、M1、零售銷售、CPI/PPI、HY 利差、DFF、DXY、銅、布蘭特、台幣匯率 |
 | [DBnomics / OECD](https://db.nomics.world/) | OECD CLI（美中日歐韓，資料截至 2023-12） |
-| [Yahoo Finance + Stooq](https://finance.yahoo.com/) | TAIEX / N225 / KOSPI / HSI YoY、VKOSPI（Stooq fallback）、ETF 量能 |
+| [Yahoo Finance + Stooq](https://finance.yahoo.com/) | TAIEX / N225 / KOSPI / HSI YoY、加權指數日收、VKOSPI（Stooq fallback）、ETF 量能 |
+| [期交所 TAIFEX](https://www.taifex.com.tw/cht/7/vixDaily3MNew) | 臺指選擇權波動率指數（台指 VIX）每日收盤；官網僅保留近 4 個月，2026-08 前的歷史取自 [salmonmisosoup/leverage-dashboard](https://github.com/salmonmisosoup/leverage-dashboard) 依台指選擇權行情重建的近似值（MIT，見 `fetchers/data/VIXTWN_SEED_LICENSE.txt`） |
 | [TWSE](https://www.twse.com.tw/) | MI_INDEX20（19 類股日收盤）、BFI82U（三大法人市場整體）、BFIAMU（三大法人各類股） |
 | [SEC EDGAR](https://www.sec.gov/cgi-bin/browse-edgar) | 13F-HR 機構持倉（20 大機構） |
 | [Eastmoney datacenter](https://datacenter-web.eastmoney.com/) | 中國 NBS PMI、中國 PPI YoY |

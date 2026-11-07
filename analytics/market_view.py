@@ -198,6 +198,47 @@ def _latest_value(data: dict, key: str, now: pd.Timestamp) -> float | None:
     return None if months is None else float(months.iloc[-1]["value"])
 
 
+def _current_days(data: dict, key: str, now: pd.Timestamp) -> pd.DataFrame | None:
+    """Raw daily rows (date-sorted, NaN dropped), or None when the feed is stale."""
+    df = data.get(key)
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+    days = (df[["date", "value"]].assign(date=lambda f: pd.to_datetime(f["date"]))
+            .dropna().sort_values("date").drop_duplicates("date", keep="last"))
+    if days.empty or (now - days.iloc[-1]["date"]).days > STALE_DAYS[REGISTRY[key].freq]:
+        return None
+    return days
+
+
+def _vixtwn_alerts(data: dict, now: pd.Timestamp, add) -> None:
+    """Taiwan VIX: level tiers, a one-day jump, and stress beyond the US VIX."""
+    tw = _current_days(data, "VIXTWN", now)
+    if tw is None:
+        return
+    level = float(tw.iloc[-1]["value"])
+    if level >= 35:
+        add("VIXTWN", "alert", f"台指 VIX {level:.1f}", "台股選擇權恐慌升溫，避免追價並控制部位")
+    elif level >= 25:
+        add("VIXTWN", "watch", f"台指 VIX {level:.1f}", "台股波動高於常態，留意是否續升破 35")
+
+    if len(tw) >= 2:
+        prev = float(tw.iloc[-2]["value"])
+        jump = (level / prev - 1) * 100 if prev else 0.0
+        if jump >= 15:
+            add("VIXTWN_JUMP", "watch", f"台指 VIX 單日 {jump:+.0f}%",
+                "波動率急升，常伴隨突發事件，隔日開盤留意")
+
+    # Taipei closes ~14 h before New York, so compare on the last shared date.
+    us = _current_days(data, "VIX", now)
+    if us is not None:
+        both = tw.merge(us, on="date", suffixes=("_tw", "_us"))
+        if not both.empty:
+            gap = float(both.iloc[-1]["value_tw"] - both.iloc[-1]["value_us"])
+            if gap >= 8:
+                add("VIXTWN_GAP", "watch", f"台指 VIX 高於美 VIX {gap:.1f}",
+                    "台股出現區域性恐慌（非全球同步），留意地緣或本地事件")
+
+
 def _pct_change_3m(data: dict, key: str, now: pd.Timestamp) -> float | None:
     months = _current_months(data, key, now)
     if months is None or len(months) <= LOOKBACK_MONTHS:
@@ -219,6 +260,8 @@ def risk_alerts(data: dict, now: pd.Timestamp | None = None) -> list[dict]:
         add("VIX", "alert", f"VIX {vix:.1f}", "市場進入壓力區，波動放大時避免追價")
     elif vix is not None and vix >= 20:
         add("VIX", "watch", f"VIX {vix:.1f}", "波動高於常態，留意是否續升破 30")
+
+    _vixtwn_alerts(data, now, add)
 
     hy = _latest_value(data, "HY_SPREAD", now)
     if hy is not None and hy >= 500:

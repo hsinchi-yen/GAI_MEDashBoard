@@ -28,6 +28,21 @@ VIX 與股市走勢高度負相關，也稱為「恐懼指數」。""",
     investmentNote = "VIX 飆升至 30 以上伴隨股市急跌時，歷史經驗顯示通常是中長期佈局機會；VIX 長期維持低位則需警惕市場自滿所帶來的下行風險。"
 )
 
+private val infoVixtwn = IndicatorInfo(
+    title = "台指 VIX（臺指選擇權波動率指數）",
+    summary = "台股專屬的恐慌溫度計，≥ 25 偏高、≥ 35 恐慌",
+    details = """期交所依 CBOE VIX 方法，以台指選擇權價格計算市場預期台股未來 30 天的波動。
+
+• < 20：台股相對平靜
+• 25–35：波動高於常態，留意是否續升
+• ≥ 35：恐慌區，通常伴隨加權指數急跌
+• 明顯高於美股 VIX（差距 ≥ 8）：壓力來自台股本身或區域事件
+
+台指 VIX 平時略高於美股 VIX，因此門檻比 VIX 高一級。""",
+    source = "期交所 TAIFEX（每日收盤，按月末取值；2026-08 前為依台指選擇權行情重建的近似值）",
+    investmentNote = "台指 VIX 衝上 35 後回落，常是短線恐慌退潮的訊號；持續高檔時避免追價並控制部位。"
+)
+
 private val infoSpread = IndicatorInfo(
     title = "美債 10Y-2Y 殖利率利差",
     summary = "倒掛（< 0）是經濟衰退的前置警訊",
@@ -114,6 +129,32 @@ fun RiskScreen(vm: DashboardViewModel) {
                         referenceLabel = "20",
                         modifier       = Modifier.fillMaxSize()
                     )
+                }
+            }
+        }
+
+        SectionTitle("🇹🇼", "台指 VIX 波動率")
+        InfoPanel(infoVixtwn)
+        Spacer(Modifier.height(8.dp))
+
+        when (val s = vm.vixtwnState) {
+            LoadState.Idle, LoadState.Loading -> LoadingCard()
+            is LoadState.Error -> ErrorCard(s.message, onRetry = { vm.loadAll() })
+            is LoadState.Success -> {
+                if (s.data.isEmpty()) {
+                    ErrorCard("台指 VIX 資料暫時無法取得", onRetry = { vm.loadAll() })
+                } else {
+                    SingleValueCard("台指 VIX", s.data, ColorTW, SignalLogic.VixBands(25f, 35f))
+                    Spacer(Modifier.height(8.dp))
+                    val pts = s.data.withinYears(vm.rangeYears)
+                    Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(chartH)) {
+                        MacroLineChart(
+                            seriesList     = listOf(ChartSeries("台指 VIX", ColorTW, pts, fillArea = true)),
+                            referenceY     = 35f,
+                            referenceLabel = "35",
+                            modifier       = Modifier.fillMaxSize()
+                        )
+                    }
                 }
             }
         }

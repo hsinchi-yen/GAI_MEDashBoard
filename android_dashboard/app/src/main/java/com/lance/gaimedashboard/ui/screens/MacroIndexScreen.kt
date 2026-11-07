@@ -24,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.lance.gaimedashboard.data.LoadState
+import com.lance.gaimedashboard.data.MacroIndexEngine
 import com.lance.gaimedashboard.data.MacroIndexResult
 import com.lance.gaimedashboard.data.MacroSignal
 import com.lance.gaimedashboard.data.withinYears
@@ -67,7 +68,7 @@ fun MacroIndexScreen(vm: DashboardViewModel) {
     ) {
         SectionTitle("🌐", "Global Macro Index")
         Text(
-            text = "20 指標二元擴散評分，整合需求、貿易、金融條件與市場內部輪動。",
+            text = "${result.signals.size} 指標二元擴散評分，整合需求、貿易、金融條件與市場內部輪動。",
             color = OnSurfaceVar,
             fontSize = 12.sp,
             modifier = Modifier.padding(horizontal = 16.dp)
@@ -81,7 +82,7 @@ fun MacroIndexScreen(vm: DashboardViewModel) {
             MacroSignalGroup(
                 label = label,
                 signals = result.signals.filter { it.group == group },
-                scoreText = "${result.groupScores[group]?.capped ?: 0}/5"
+                scoreText = "${result.groupScores[group]?.capped ?: 0}/${MacroIndexEngine.GROUP_CAPS[group] ?: 5}"
             )
             Spacer(Modifier.height(10.dp))
         }
@@ -157,7 +158,7 @@ private fun MacroSummary(result: MacroIndexResult) {
                 modifier = Modifier.weight(1.2f)
             )
             SummaryCard(
-                title = "${result.score} / 20",
+                title = "${result.score} / ${result.signals.size}",
                 subtitle = "GMI 分數",
                 accent = PrimaryTeal,
                 modifier = Modifier.weight(1f)
@@ -177,7 +178,7 @@ private fun MacroSummary(result: MacroIndexResult) {
                 modifier = Modifier.weight(1f)
             )
             SummaryCard(
-                title = "${result.validCount} / 20",
+                title = "${result.validCount} / ${result.signals.size}",
                 subtitle = "有效指標",
                 accent = SurfaceBright,
                 modifier = Modifier.weight(1f)

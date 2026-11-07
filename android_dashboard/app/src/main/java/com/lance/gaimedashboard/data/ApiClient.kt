@@ -1,5 +1,6 @@
 package com.lance.gaimedashboard.data
 
+import android.content.res.AssetManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -11,6 +12,7 @@ import java.io.ByteArrayInputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
 
@@ -19,7 +21,7 @@ import java.util.zip.ZipInputStream
  * All public functions are suspending and run on [Dispatchers.IO].
  * Results are cached in memory with a 1-hour TTL.
  */
-class ApiClient {
+class ApiClient(private val assets: AssetManager? = null) {
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -915,6 +917,52 @@ class ApiClient {
     /** Panel D: CSI300 monthly YoY % (Yahoo 000300.SS). */
     suspend fun loadCsi300Yoy(): List<DataPoint> =
         loadYahooIndexYoy(cacheKey = "csi300_yoy", ticker = "000300.SS")
+
+    /**
+     * Panel D: TAIWAN VIX (TAIFEX 臺指選擇權波動率指數), month-end level.
+     *
+     * TAIFEX keeps only ~4 months of daily files online, so the bundled asset
+     * `vixtwn_seed.csv` (reconstructed history, MIT, same file as the web app's
+     * fetchers/data) supplies the past and official values win on shared days.
+     */
+    suspend fun loadVixtwn(months: Int = 2): List<DataPoint> {
+        val cacheKey = "vixtwn"
+        cached(cacheKey)?.let { return it }
+        return withContext(Dispatchers.IO) {
+            val byDay = sortedMapOf<Long, Float>()
+            byDay.putAll(readVixtwnSeed())
+            val cal = java.util.Calendar.getInstance(TimeZone.getTimeZone("Asia/Taipei"))
+            repeat(months) { i ->
+                val ym = "%04d%02d".format(cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH) + 1)
+                runCatching { getText("https://www.taifex.com.tw/file/taifex/Dailydownload/vix/log2data_eng/${ym}new.txt") }
+                    .onSuccess { byDay.putAll(parseVixtwnText(it)) }
+                if (i < months - 1) cal.add(java.util.Calendar.MONTH, -1)
+            }
+            downsampleMonthlyLast(byDay.map { (ts, v) -> DataPoint(ts, v) })
+        }.also { store(cacheKey, it) }
+    }
+
+    private val vixtwnDay = SimpleDateFormat("yyyyMMdd", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
+    private val vixtwnIso = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
+
+    /** `YYYYMMDD  13450000  <Daily Index>  <Last 1 min AVG>`; header lines and 404 pages yield nothing. */
+    private fun parseVixtwnText(text: String): Map<Long, Float> =
+        text.lineSequence().mapNotNull { line ->
+            val parts = line.trim().split(Regex("\\s+"))
+            if (parts.size < 3 || !parts[0].matches(Regex("\\d{8}"))) return@mapNotNull null
+            val ts = runCatching { vixtwnDay.parse(parts[0])?.time }.getOrNull() ?: return@mapNotNull null
+            parts[2].toFloatOrNull()?.let { ts to it }
+        }.toMap()
+
+    private fun readVixtwnSeed(): Map<Long, Float> = runCatching {
+        assets?.open("vixtwn_seed.csv")?.bufferedReader()?.useLines { lines ->
+            lines.drop(1).mapNotNull { line ->
+                val (day, value) = line.split(",").takeIf { it.size >= 2 } ?: return@mapNotNull null
+                val ts = vixtwnIso.parse(day)?.time ?: return@mapNotNull null
+                value.toFloatOrNull()?.let { ts to it }
+            }.toMap()
+        }
+    }.getOrNull().orEmpty()
 
     /** Panel D: VKOSPI level (Yahoo ^VKOSPI, monthly close). */
     suspend fun loadVkospi(yearsBack: Int = 6): List<DataPoint> {

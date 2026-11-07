@@ -35,7 +35,7 @@ for _p in (os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from macro_index import compute_macro_index, REGIME_GREEN_PCT, REGIME_RED_PCT
+from macro_index import compute_macro_index, REGIME_GREEN_PCT, REGIME_RED_PCT, TOTAL_INDICATORS
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -111,14 +111,14 @@ def _run_synthetic() -> int:
     check("A: OLD regime was NOT green (missing data dragged it down = the bug)",
           old_reg_a != "green")
 
-    # Scenario B: all 19 present & bullish → regime is green.
+    # Scenario B: all 20 present & bullish → regime is green.
     # (OECD CLI indicator #9 was removed; CLI data keys are still passed but ignored by compute_gmi)
     data_b = dict(data_a)
     data_b.update({
         "US_CORE_CPI_YOY": yoy, "US_CORE_PPI_YOY": _mdf([5.0, 4.0, 3.0]),
         "CPI_PPI_SCISSORS": pd.DataFrame(), "CN_PPI_YOY": _mdf([-3.0, -2.0, -1.0]),
         "T10Y3M": t10, "TW_M1B_YOY": m1b, "TW_M2_YOY": m2,
-        "NDC_LEADING": _mdf([98.0, 99.0, 100.0]), "VIX": vix, "TWD_USD": twd,
+        "NDC_LEADING": _mdf([98.0, 99.0, 100.0]), "VIX": vix, "VIXTWN": vix, "TWD_USD": twd,
         "COPPER_YOY": cu, "SECTOR_ROTATION": rot,
         "THIRTEENF_NET_ADD": _mdf([0.5]),
     })
@@ -170,7 +170,7 @@ _GMI_MAP = [
     ("TW_M1B_YOY", "cbc_money_supply.m1b_yoy", "raw"),
     ("TW_M2_YOY", "cbc_money_supply.m2_yoy", "raw"),
     ("COPPER_YOY", "copper_yoy", "raw"), ("TWD_USD", "twd_usd", "raw"),
-    ("VIX", "vix", "raw"),
+    ("VIX", "vix", "raw"), ("VIXTWN", "vixtwn", "raw"),
     ("SECTOR_ROTATION", "sector_rotation", "raw"),
     ("THIRTEENF_NET_ADD", "13f_proxy", "raw"),
 ]
@@ -217,7 +217,7 @@ def _run_real_db(db_path: str) -> None:
         print(f"  {sig['id']:>2} {sig['name']:28s} {flag:8s} {sig['score']:>5}  {sig['raw']}")
 
     missing = [s["name"] for s in result["signals"] if not s["has_data"]]
-    print(f"\n  valid_count = {result['valid_count']}/19   confidence = {result['confidence']}")
+    print(f"\n  valid_count = {result['valid_count']}/{TOTAL_INDICATORS}   confidence = {result['confidence']}")
     if missing:
         print(f"  MISSING ({len(missing)}): " + ", ".join(missing))
 

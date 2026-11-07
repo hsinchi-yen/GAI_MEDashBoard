@@ -16,6 +16,7 @@ Fetch-year strategy
 Schedule
 ────────
   02:00 Asia/Taipei daily         → all macro indicators
+  17:00 Asia/Taipei Mon-Fri       → TAIWAN VIX + TAIEX daily close (same-day read)
   02:30 Asia/Taipei daily         → Taiwan sector indices + turnover
   06:00 Asia/Taipei Mon + Thu     → US sector ETF rotation + 13F smart money
   03:00 Asia/Taipei 1st of month  → DB trim (15-year window) + WAL checkpoint
@@ -29,7 +30,8 @@ Indicators covered
   DBnomics     : ISM PMI (5 sub-indices), OECD CLI (US/CN/JP/EU/KR)
   Taiwan govt  : MOF exports, CBC M1B/M2, CIER PMI, MOPS TSMC revenue, NDC leading
   Global scrape: NBS PMI (CN), Japan economy watchers, NBS PPI YoY, Eurostat ICI
-  Yahoo Finance: TAIEX YoY, VKOSPI, N225/KS11/HSI/CSI300 YoY
+  Yahoo Finance: TAIEX YoY + daily close, VKOSPI, N225/KS11/HSI/CSI300 YoY
+  TAIFEX       : TAIWAN VIX daily close (bundled seed history before 2026-08)
   TWSE T86     : Institutional net buy/sell (5-day & 20-day snapshots)
   TWSE MI_INDEX: Taiwan 19-sector daily indices + turnover
   SEC EDGAR    : 13F smart money (20 major funds, quarterly snapshot)
@@ -71,6 +73,7 @@ from fetchers import (
     fetch_japan_economy_watchers, fetch_china_nbs_ppi_yoy, fetch_eurostat_ici,
     fetch_etf_bulk, fetch_sector_rotation, fetch_13f_proxy,
     fetch_index_yoy, fetch_index_monthly_close, fetch_vkospi, fetch_13f_smart_money,
+    fetch_index_daily_close, fetch_vixtwn, load_vixtwn_history,
 )
 from fetchers.taiwan_sector import (
     fetch_tw_sector_indices,
@@ -265,8 +268,29 @@ def job_macro_indicators(*, initial: bool = False) -> None:
         _run(key, fetch_index_monthly_close, ttl_days=7, initial=backfill,
              post_sleep=yf_sleep, ticker=ticker, years_back=15 if backfill else y)
 
+    job_tw_volatility(initial=initial)
+
     db_manager.cleanup_expired()
     logger.info("=== macro indicators complete ===")
+
+
+# ── job: Taiwan volatility (same-day) ─────────────────────────────────────────
+
+def job_tw_volatility(*, initial: bool = False) -> None:
+    """TAIWAN VIX and TAIEX daily close.
+
+    TAIFEX posts the day's VIX around 16:10 Taipei, so a 17:00 run makes the
+    alert reflect today's session instead of waiting for the 02:00 batch.
+    An empty series is bulk-loaded first: a delta write would keep only 30 days.
+    """
+    if initial or db_manager.max_date("vixtwn") is None:
+        _run("vixtwn", load_vixtwn_history, ttl_days=7, initial=True)
+    else:
+        _run("vixtwn", fetch_vixtwn, ttl_days=7)
+
+    backfill = initial or db_manager.max_date("taiex_daily") is None
+    _run("taiex_daily", fetch_index_daily_close, ttl_days=7, initial=backfill,
+         ticker="^TWII", years_back=6 if backfill else 1)
 
 
 # ── job: Taiwan sector ────────────────────────────────────────────────────────
@@ -407,6 +431,10 @@ if __name__ == "__main__":
     scheduler.add_job(
         job_macro_indicators, CronTrigger(hour=2, minute=0),
         id="macro_daily", name="Daily macro indicators",
+    )
+    scheduler.add_job(
+        job_tw_volatility, CronTrigger(day_of_week="mon-fri", hour=17, minute=0),
+        id="tw_volatility", name="TAIWAN VIX + TAIEX daily",
     )
     scheduler.add_job(
         job_taiwan_sector, CronTrigger(hour=2, minute=30),

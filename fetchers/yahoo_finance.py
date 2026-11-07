@@ -112,6 +112,30 @@ def fetch_index_monthly_close(ticker: str, years_back: int = 15) -> pd.DataFrame
     return df.drop_duplicates(subset="date", keep="last").reset_index(drop=True)
 
 
+def fetch_index_daily_close(ticker: str, years_back: int = 6) -> pd.DataFrame:
+    """日收盤 price level {date, value}，date 為交易所當地的交易日（午夜）。"""
+    raw = _yf_chart(ticker, interval="1d", range_str=f"{max(years_back, 1)}y")
+    if not raw or not raw.get("timestamp"):
+        return pd.DataFrame()
+    indicators = raw.get("indicators", {})
+    closes = (indicators.get("adjclose") or [{}])[0].get("adjclose") \
+        or (indicators.get("quote") or [{}])[0].get("close") or []
+    if len(closes) != len(raw["timestamp"]):
+        return pd.DataFrame()
+    df = pd.DataFrame({"date": _bar_dates(raw).dt.normalize(), "value": closes})
+    # Yahoo often leaves the newest daily bar's close empty for hours after the
+    # session; the quote in `meta` already has it.
+    meta = raw.get("meta") or {}
+    price, when = meta.get("regularMarketPrice"), meta.get("regularMarketTime")
+    if price is not None and when and pd.isna(df["value"].iloc[-1]):
+        session = pd.to_datetime(when + (meta.get("gmtoffset") or 0), unit="s").normalize()
+        if session == df["date"].iloc[-1]:
+            df.loc[df.index[-1], "value"] = float(price)
+    df = df.dropna().sort_values("date")
+    # The running session's bar is stamped with the current time, not midnight.
+    return df.drop_duplicates("date", keep="last").reset_index(drop=True)
+
+
 def _vkospi_stooq(years_back: int) -> pd.DataFrame:
     """Stooq CSV fallback for VKOSPI (^VKOSPI.KO or ^VKOSPI).
     Stooq requires an API key as of 2025; returns empty gracefully if blocked.

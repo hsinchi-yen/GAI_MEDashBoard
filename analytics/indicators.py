@@ -137,6 +137,8 @@ _CATALOGUE: tuple[Indicator, ...] = (
               "中國境外資金的情緒"),
     Indicator("CSI300_YOY", "滬深 300 YoY", "market", +1, "%", "monthly", "coincident",
               "中國境內資金的情緒"),
+    Indicator("VIXTWN", "台指 VIX 波動率", "market", -1, "", "daily", "coincident",
+              "台指選擇權隱含的 30 天波動；≥25 偏高、≥35 恐慌"),
     Indicator("VKOSPI", "VKOSPI 韓股波動率", "market", -1, "", "daily", "coincident",
               "亞洲半導體權重市場的恐慌指標"),
     Indicator("SECTOR_ROTATION", "循環 vs 防禦輪動", "market", +1, "", "monthly", "leading",

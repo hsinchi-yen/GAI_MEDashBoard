@@ -99,16 +99,16 @@ private val infoAsiaIndex = IndicatorInfo(
 )
 
 private val infoVixVkospi = IndicatorInfo(
-    title = "VIX vs VKOSPI 波動率比對",
-    summary = "美國與韓國恐慌指標共振，可快速辨識風險外溢",
-    details = """VIX 代表美股隱含波動率；VKOSPI 代表韓股期權隱含波動率。
+    title = "VIX vs VKOSPI vs 台指 VIX 波動率比對",
+    summary = "美、韓、台恐慌指標共振，可快速辨識風險外溢",
+    details = """VIX 代表美股隱含波動率；VKOSPI 代表韓股期權隱含波動率；台指 VIX 為期交所臺指選擇權波動率指數。
 
-• VIX、VKOSPI 同步上升：亞太與美股風險偏好同步惡化
-• 僅 VKOSPI 上升：偏區域性事件衝擊
+• 三者同步上升：亞太與美股風險偏好同步惡化
+• 僅 VKOSPI 或台指 VIX 上升：偏區域性事件衝擊（台指 VIX 高於 VIX 8 點以上需留意）
 • 兩者回落：風險事件緩解，市場回到正常波動區間
 
 若同時伴隨 HY 利差擴大，通常為降低股票曝險的強警訊。""",
-    source = "FRED VIXCLS + Yahoo ^VKOSPI",
+    source = "FRED VIXCLS + Yahoo ^VKOSPI + 期交所（2026-08 前為依台指選擇權行情重建的近似值）",
     investmentNote = "兩者同時站上高檔後回落，常是風險資產由弱轉穩的重要觀察點。"
 )
 
@@ -266,7 +266,7 @@ fun StockScreen(vm: DashboardViewModel) {
         }
 
         // ── 亞洲 VIX 風險監控 ───────────────────────────────────────────────
-        SectionTitle("📡", "亞洲 VIX 風險監控（VIX vs VKOSPI）")
+        SectionTitle("📡", "亞洲 VIX 風險監控（VIX vs VKOSPI vs 台指 VIX）")
         InfoPanel(infoVixVkospi)
         Spacer(Modifier.height(8.dp))
 
@@ -278,10 +278,16 @@ fun StockScreen(vm: DashboardViewModel) {
             is LoadState.Success -> s.data.withinYears(vm.rangeYears)
             else -> emptyList()
         }
+        val vixtwnSeries = when (val s = vm.vixtwnState) {
+            is LoadState.Success -> s.data.withinYears(vm.rangeYears)
+            else -> emptyList()
+        }
 
         when {
-            vm.vixState is LoadState.Loading || vm.vkospiState is LoadState.Loading -> LoadingCard()
-            vixSeries.isEmpty() && vkospiSeries.isEmpty() -> ErrorCard("VIX/VKOSPI 資料暫時無法取得", onRetry = { vm.loadAll() })
+            vm.vixState is LoadState.Loading || vm.vkospiState is LoadState.Loading ||
+                vm.vixtwnState is LoadState.Loading -> LoadingCard()
+            vixSeries.isEmpty() && vkospiSeries.isEmpty() && vixtwnSeries.isEmpty() ->
+                ErrorCard("VIX/VKOSPI/台指 VIX 資料暫時無法取得", onRetry = { vm.loadAll() })
             else -> {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
@@ -301,11 +307,19 @@ fun StockScreen(vm: DashboardViewModel) {
                         logic = SignalLogic.Plain,
                         modifier = Modifier.weight(1f)
                     )
+                    LatestValueCard(
+                        label = "🇹🇼 台指 VIX",
+                        seriesColor = ColorTW,
+                        data = when (val s = vm.vixtwnState) { is LoadState.Success -> s.data; else -> emptyList() },
+                        logic = SignalLogic.Plain,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
                 Spacer(Modifier.height(8.dp))
                 val riskSeries = buildList {
                     if (vixSeries.isNotEmpty()) add(ChartSeries("🇺🇸 VIX", ColorUS, vixSeries))
                     if (vkospiSeries.isNotEmpty()) add(ChartSeries("🇰🇷 VKOSPI", ColorKR, vkospiSeries))
+                    if (vixtwnSeries.isNotEmpty()) add(ChartSeries("🇹🇼 台指 VIX", ColorTW, vixtwnSeries))
                 }
                 Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(chartH)) {
                     MacroLineChart(

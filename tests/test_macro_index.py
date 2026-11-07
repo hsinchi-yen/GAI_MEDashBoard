@@ -49,7 +49,7 @@ def make_df(values: list[float]) -> pd.DataFrame:
 
 def _full_data() -> dict:
     """
-    Minimal but complete data dict for all 19 indicators.
+    Minimal but complete data dict for all 20 indicators.
     Not all signals will be 1 — that's intentional; correctness depends on
     the actual scoring rules, not a forced all-green scenario.
     """
@@ -82,6 +82,7 @@ def _full_data() -> dict:
         "TW_M1B_YOY": make_df([3.0, 4.0, 5.0]),
         "TW_M2_YOY": make_df([2.0, 2.5, 3.0]),
         "VIX": vix_fall,
+        "VIXTWN": vix_fall,
         "TWD_USD": twd_fall,
         "COPPER_YOY": yoy_pos,
         "SECTOR_ROTATION": rot_up,
@@ -334,20 +335,20 @@ class TestComputeMacroIndex:
             assert "has_data" in sig, f"Signal #{sig['id']} missing has_data"
             assert isinstance(sig["has_data"], bool)
 
-    def test_exactly_19_signals(self):
+    def test_exactly_20_signals(self):
         result = compute_macro_index(_full_data())
-        assert len(result["signals"]) == 19
+        assert len(result["signals"]) == 20
 
-    def test_valid_count_is_19_with_full_data(self):
+    def test_valid_count_is_20_with_full_data(self):
         result = compute_macro_index(_full_data())
-        assert result["valid_count"] == 19
+        assert result["valid_count"] == 20
 
     def test_valid_count_decreases_when_indicators_missing(self):
         data = _full_data()
         data["SECTOR_ROTATION"] = None           # #18 → has_data=False
         data["THIRTEENF_NET_ADD"] = pd.DataFrame()  # #19 → has_data=False
         result = compute_macro_index(data)
-        assert result["valid_count"] == 17
+        assert result["valid_count"] == 18
 
     def test_confidence_normal_with_16_or_more_valid(self):
         result = compute_macro_index(_full_data())
@@ -357,10 +358,12 @@ class TestComputeMacroIndex:
         result = compute_macro_index({})
         assert result["confidence"] == "low"
 
-    def test_group_cap_never_exceeds_5(self):
+    def test_group_cap_never_exceeded(self):
+        from macro_index import GROUP_CAPS
         result = compute_macro_index(_full_data())
         for grp, scores in result["group_scores"].items():
-            assert scores["capped"] <= 5, f"Group {grp} capped={scores['capped']} exceeds 5"
+            cap = GROUP_CAPS[grp]
+            assert scores["capped"] <= cap, f"Group {grp} capped={scores['capped']} exceeds {cap}"
             assert scores["raw"] >= scores["capped"]
 
     def test_total_score_equals_sum_of_capped_scores(self):
@@ -375,10 +378,10 @@ class TestComputeMacroIndex:
         assert abs(result["diffusion"] - result["score"] / result["valid_count"] * 100) < 0.1
 
     def test_diffusion_full_data_matches_legacy(self):
-        """With all 19 valid, proportional diffusion equals the legacy /19 value."""
+        """With all 20 valid, proportional diffusion equals the fixed /20 value."""
         result = compute_macro_index(_full_data())
-        assert result["valid_count"] == 19
-        assert abs(result["diffusion"] - result["score"] / 19 * 100) < 0.1
+        assert result["valid_count"] == 20
+        assert abs(result["diffusion"] - result["score"] / 20 * 100) < 0.1
 
     def test_missing_indicators_do_not_drag_regime_down(self):
         """Core fix: dropping bullish indicators must not flip green→yellow/red."""
@@ -389,7 +392,7 @@ class TestComputeMacroIndex:
             data[k] = None
         partial = compute_macro_index(data)
         # Proportional diffusion should stay >= the legacy /20 value for the same score.
-        legacy_diff = partial["score"] / 19 * 100
+        legacy_diff = partial["score"] / 20 * 100
         assert partial["diffusion"] >= legacy_diff
         # And valid_count dropped by exactly 6.
         assert partial["valid_count"] == full["valid_count"] - 6

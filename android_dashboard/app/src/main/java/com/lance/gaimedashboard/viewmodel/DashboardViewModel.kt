@@ -20,7 +20,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
 
     private val defaultFredKey = "13bf3245b1fef176250249752ed063ef"
     private val prefs = app.getSharedPreferences("gdash_prefs", Context.MODE_PRIVATE)
-    private val api = ApiClient()
+    private val api = ApiClient(app.assets)
 
     // ── Settings ──────────────────────────────────────────────────────────────
 
@@ -73,6 +73,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
     var hsiYoyState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
     var csi300YoyState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
     var vkospiState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
+    var vixtwnState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
     var fedFundsState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
     var t10y3mState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
     var usNewOrdersYoyState: LoadState<List<DataPoint>> by mutableStateOf(LoadState.Idle)
@@ -333,6 +334,13 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             LoadState.Error(e.localizedMessage ?: "VKOSPI 載入失敗")
         }
 
+        vixtwnState = LoadState.Loading
+        vixtwnState = try {
+            LoadState.Success(api.loadVixtwn())
+        } catch (e: Exception) {
+            LoadState.Error(e.localizedMessage ?: "台指 VIX 載入失敗")
+        }
+
         fedFundsState = LoadState.Loading
         fedFundsState = try {
             LoadState.Success(api.loadFedFundsRate(key))
@@ -404,6 +412,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
             "TW_M1B_YOY" to money["tw_m1b"].orEmpty(),
             "TW_M2_YOY" to money["tw_m2"].orEmpty(),
             "VIX" to successList(vixState),
+            "VIXTWN" to successList(vixtwnState),
             "TWD_USD" to successList(twdUsdState),
             "COPPER_YOY" to successList(copperYoyState),
             "SECTOR_ROTATION" to successList(sectorRotationState),

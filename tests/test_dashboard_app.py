@@ -273,8 +273,38 @@ class TestResponsiveness:
             pd.testing.assert_frame_equal(frame, captured["data"][key], obj=key)
 
 
+class TestVixtwn:
+    def _chart_names(self, at: AppTest) -> list[str]:
+        import json
+        return [t.get("name", "") for c in at.get("plotly_chart")
+                for t in json.loads(c.proto.spec)["data"]]
+
+    def test_equity_page_pairs_taiex_with_taiwan_vix(self, app):
+        at = app("equity").run()
+        names = self._chart_names(at)
+        assert "加權指數" in names
+        assert names.count("台指 VIX") == 2          # subplot + Asia comparison
+        labels = [m.label for m in at.metric]
+        assert any(label.startswith("台指 VIX（") for label in labels)
+        assert "5 年位階" in labels and "台指 VIX − 美 VIX" in labels
+        assert any(label.startswith("加權指數（") for label in labels)
+
+    def test_range_switch_reruns_cleanly(self, app):
+        at = app("equity").run()
+        at.radio(key="vixtwn_p").set_value("5Y").run()
+        assert not at.exception, [e.value for e in at.exception]
+
+    def test_status_strip_shows_taiwan_vix(self, app):
+        assert "台VIX" in all_markdown(app("radar").run())
+
+    def test_gmi_page_lists_twenty_indicators(self, app):
+        at = app("gmi").run()
+        assert "20 項指標方向明細" in [h.value for h in at.subheader]
+        assert "台指 VIX" in all_markdown(at)
+
+
 class TestChartTheme:
-    @pytest.mark.parametrize("page", ["verdict", "liquidity"])
+    @pytest.mark.parametrize("page", ["verdict", "liquidity", "equity"])
     def test_every_chart_uses_the_app_template(self, app, page):
         """st.plotly_chart swaps Plotly's global default after its first call."""
         import json
@@ -307,7 +337,7 @@ class TestDegradedStates:
         st.cache_data.clear()
         st.cache_resource.clear()
 
-    @pytest.mark.parametrize("page", ["radar", "gmi", "backtest", "rotation"])
+    @pytest.mark.parametrize("page", ["radar", "gmi", "backtest", "rotation", "equity"])
     def test_empty_database_keeps_pages_alive(self, tmp_path, monkeypatch, network_attempts, page):
         monkeypatch.setattr(db_manager, "_DB_PATH", tmp_path / "empty.sqlite3")
         st.cache_data.clear()

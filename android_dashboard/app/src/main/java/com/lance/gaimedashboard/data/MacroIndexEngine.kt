@@ -31,7 +31,8 @@ object MacroIndexEngine {
     private const val REGIME_GREEN = 15
     private const val REGIME_RED = 9
     private const val MIN_VALID = 16
-    private const val GROUP_CAP = 5
+    // D holds six market gauges since TAIWAN VIX (#21) joined; mirrors macro_index.GROUP_CAPS.
+    val GROUP_CAPS = mapOf("A" to 5, "B" to 5, "C" to 5, "D" to 6)
 
     private val regimeLabels = mapOf(
         "green" to "🟢 擴張",
@@ -72,9 +73,10 @@ object MacroIndexEngine {
         add("D", 18, yoyPositive("D", 18, "銅價 YoY", data["COPPER_YOY"]))
         add("D", 19, positiveAndSlopeUp("D", 19, "內部輪動指數", data["SECTOR_ROTATION"], rule = ">0 且 3M 斜率向上"))
         add("D", 20, positiveSimple("D", 20, "13F 循環/防禦淨加碼", data["THIRTEENF_NET_ADD"], rule = ">0"))
+        add("D", 21, threeMonthDown("D", 21, "台指 VIX", data["VIXTWN"], rule = "3M 下降"))
 
-        val groupScores = groups.mapValues { (_, scores) ->
-            MacroGroupScore(raw = scores.sum(), capped = minOf(scores.sum(), GROUP_CAP))
+        val groupScores = groups.mapValues { (group, scores) ->
+            MacroGroupScore(raw = scores.sum(), capped = minOf(scores.sum(), GROUP_CAPS.getValue(group)))
         }
         val score = groupScores.values.sumOf { it.capped }
         val validCount = signals.count { !it.raw.startsWith("N/A") }
@@ -88,7 +90,7 @@ object MacroIndexEngine {
 
         return MacroIndexResult(
             score = score,
-            diffusion = score / 20f * 100f,
+            diffusion = score / signals.size.toFloat() * 100f,  // 21 signals, max 21 after D cap 6
             regime = regime,
             regimeLabel = regimeLabels.getValue(regime),
             confidence = confidence,

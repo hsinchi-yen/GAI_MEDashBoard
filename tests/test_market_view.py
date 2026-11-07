@@ -380,5 +380,5 @@ class TestBrief:
 
 
 def test_compute_macro_index_on_synthetic_data_is_complete():
-    """Fixture sanity: the synthetic set feeds all 19 scored indicators."""
-    assert compute_macro_index(macro_dataset(0.5))["valid_count"] == 19
+    """Fixture sanity: the synthetic set feeds all 20 scored indicators."""
+    assert compute_macro_index(macro_dataset(0.5))["valid_count"] == 20

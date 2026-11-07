@@ -16,7 +16,7 @@ from analytics.gmi_backtest import (
 )
 from analytics.market_view import compute_market_view, theme_brief
 from macro_index import (
-    TOTAL_INDICATORS, build_macro_index_history, get_regime_color, REGIME_LABELS,
+    GROUP_CAPS, TOTAL_INDICATORS, build_macro_index_history, get_regime_color, REGIME_LABELS,
 )
 from ui import components as ui
 from ui.charts import decimate_figure
@@ -266,6 +266,8 @@ def load_data(fred_key):
     data['HSI_YOY']           = dfetch.fetch_index_yoy('^HSI')
     data['CSI300_YOY']        = dfetch.fetch_index_yoy('000300.SS')
     data['VKOSPI']            = dfetch.fetch_vkospi()
+    data['VIXTWN']            = dfetch.load_vixtwn_history()
+    data['TAIEX_DAILY']       = dfetch.fetch_index_daily_close('^TWII')
     data['FED_FUNDS']         = dfetch.fetch_fed_funds_rate(fred_key)
     data['T10Y3M']            = dfetch.fetch_t10y3m(fred_key)
     data['US_NEW_ORDERS_YOY'] = dfetch.fetch_us_new_orders_yoy(fred_key)
@@ -410,6 +412,8 @@ def load_all_from_db(version: str, fred_key: str = "") -> dict:
     data['HSI_YOY']           = R('hsi_yoy')
     data['CSI300_YOY']        = R('csi300_yoy')
     data['VKOSPI']            = R('vkospi')
+    data['VIXTWN']            = R('vixtwn')
+    data['TAIEX_DAILY']       = R('taiex_daily')
     data['FED_FUNDS']         = R('fed_funds_rate')
     data['T10Y3M']            = R('t10y3m')
     data['US_NEW_ORDERS_YOY'] = R('us_new_orders_yoy')
@@ -643,8 +647,10 @@ PAGE_META = {
                   "殖利率曲線倒掛後轉正時，歷史上衰退風險反而最高。M1B 高於 M2 的黃金交叉偏多台股。"),
     "equity":    ("股市比對", "股市走勢與總經訊號是否一致", ("market",),
                   "股市通常領先總經 3-6 個月。總經轉差但股市仍強，要留意補跌；"
-                  "總經觸底而股市不再破底，常是中期買點的訊號。"),
-    "gmi":       ("GMI 指數", "19 項指標的多空擴散與歷史軌跡", (), ""),
+                  "總經觸底而股市不再破底，常是中期買點的訊號。"
+                  "台指 VIX 衝上 35 多半伴隨急跌，從高檔回落時常是短線恐慌退潮的訊號；"
+                  "台指 VIX 明顯高於美 VIX，代表壓力來自台股本身。"),
+    "gmi":       ("GMI 指數", f"{TOTAL_INDICATORS} 項指標的多空擴散與歷史軌跡", (), ""),
     "rotation":  ("台股資金輪動", "資金正流向台股哪些類股", (), ""),
     "backtest":  ("燈號回測", "歷史上各燈號之後的股市表現", (), ""),
     "guide":     ("使用指南", "如何閱讀這個儀表板", (), ""),
@@ -732,7 +738,8 @@ with st.sidebar:
 
 def _strip_facts() -> list[tuple[str, str]]:
     """Live market gauges for the status strip, skipping series with no data."""
-    specs = (("VIX", 'VIX', "{:.1f}"), ("HY", 'HY_SPREAD', "{:.0f} bps"),
+    specs = (("VIX", 'VIX', "{:.1f}"), ("台VIX", 'VIXTWN', "{:.1f}"),
+             ("HY", 'HY_SPREAD', "{:.0f} bps"),
              ("10Y-3M", 'T10Y3M', "{:+.2f}"), ("美元", 'DXY', "{:.1f}"),
              ("USD/TWD", 'TWD_USD', "{:.2f}"))
     facts = []
@@ -1478,6 +1485,100 @@ def page_liquidity():
 
 # ════════════════════════════════════════════════════════
 # Panel D：股市比對
+# ── 台股波動率 VIXTWN ─────────────────────────────────────────────────────────
+VIXTWN_WATCH, VIXTWN_ALERT = 25, 35          # same tiers as analytics.market_view
+VOL_PERIODS = {"1M": 30, "3M": 91, "6M": 182, "1Y": 365, "3Y": 365 * 3, "5Y": 365 * 5}
+PANIC_FILL = "rgba(230,103,103,0.12)"
+
+
+def _spans_at_or_above(df: pd.DataFrame, level: float) -> list[tuple]:
+    """(first, last) dates of each run of consecutive rows at or above `level`."""
+    hot = df["value"] >= level
+    if not hot.any():
+        return []
+    run_id = (hot != hot.shift()).cumsum()
+    return [(g["date"].iloc[0], g["date"].iloc[-1]) for _, g in df[hot].groupby(run_id[hot])]
+
+
+def _vixtwn_percentile() -> float | None:
+    """Same 5Y percentile the trend radar shows, so the two never disagree."""
+    radar = view["radar"]
+    row = radar[radar["key"] == "VIXTWN"] if not radar.empty else radar
+    return None if row.empty else float(row.iloc[0]["percentile"])
+
+
+def _vixtwn_metrics(tw: pd.DataFrame, us: pd.DataFrame | None, taiex: pd.DataFrame | None) -> None:
+    lv, pv = get_latest(tw), get_prev(tw)
+    st.metric(f"台指 VIX（{tw.iloc[-1]['date']:%m/%d}）", f"{lv:.2f}",
+              delta=f"{lv - pv:+.2f}" if pv is not None else None, delta_color="inverse")
+
+    pct = _vixtwn_percentile()
+    st.metric("5 年位階", f"{pct:.0f}%" if pct is not None else "資料不足",
+              help="最新月底值在近 5 年月底值中的百分位，與趨勢雷達一致；越高代表越恐慌")
+
+    gap = None
+    if us is not None and not us.empty:
+        both = tw.merge(us[["date", "value"]], on="date", suffixes=("_tw", "_us"))
+        if not both.empty:
+            gap = float(both.iloc[-1]["value_tw"] - both.iloc[-1]["value_us"])
+    st.metric("台指 VIX − 美 VIX", f"{gap:+.1f}" if gap is not None else "N/A",
+              help="同一交易日比較；≥ 8 代表台股出現區域性恐慌")
+
+    if taiex is not None and len(taiex) > 1:
+        tv, tp = get_latest(taiex), get_prev(taiex)
+        st.metric(f"加權指數（{taiex.iloc[-1]['date']:%m/%d}）", f"{tv:,.0f}",
+                  delta=f"{(tv / tp - 1) * 100:+.2f}%" if tp else None)
+
+
+def _render_vixtwn_section() -> None:
+    st.subheader("台股波動率 VIXTWN")
+    st.caption(
+        "期交所臺指選擇權波動率指數，反映市場預期台股未來 30 天的波動。"
+        f"≥ {VIXTWN_WATCH} 偏高、≥ {VIXTWN_ALERT} 恐慌（紅底區間）。"
+        "資料來源：期交所；2026-08 前為依台指選擇權行情重建的近似值。"
+    )
+    tw_all = data.get('VIXTWN')
+    if tw_all is None or tw_all.empty:
+        st.warning("台指 VIX 資料尚未載入，排程完成首次更新後即會顯示。")
+        return
+
+    sel = st.radio("時間範圍", list(VOL_PERIODS), index=3, horizontal=True, key="vixtwn_p")
+    start = pd.Timestamp(datetime.now() - timedelta(days=VOL_PERIODS[sel]))
+    tw = tw_all[tw_all['date'] >= start]
+    taiex_all = data.get('TAIEX_DAILY')
+    taiex = taiex_all[taiex_all['date'] >= start] if taiex_all is not None and not taiex_all.empty else None
+
+    col_chart, col_metrics = st.columns([3, 1])
+    with col_chart:
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                            row_heights=[0.55, 0.45], vertical_spacing=0.04)
+        if taiex is not None and not taiex.empty:
+            fig.add_trace(go.Scatter(
+                x=taiex['date'], y=taiex['value'], name='加權指數',
+                line=dict(color=TOKENS["accent"], width=1.8),
+                hovertemplate='%{x|%Y-%m-%d}<br>加權指數: %{y:,.0f}<extra></extra>'), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=tw['date'], y=tw['value'], name='台指 VIX',
+            line=dict(color=TOKENS["serious"], width=1.8),
+            hovertemplate='%{x|%Y-%m-%d}<br>台指 VIX: %{y:.2f}<extra></extra>'), row=2, col=1)
+        for level, label, color in ((VIXTWN_WATCH, f'偏高 {VIXTWN_WATCH}', TOKENS["flat"]),
+                                    (VIXTWN_ALERT, f'恐慌 {VIXTWN_ALERT}', TOKENS["bear"])):
+            fig.add_hline(y=level, line_dash='dot', line_color=color, row=2, col=1,
+                          annotation_text=label, annotation_position='bottom right',
+                          annotation_font_color=color)
+        for x0, x1 in _spans_at_or_above(tw, VIXTWN_ALERT):
+            # Pad by half a day so a single-day spike is still visible.
+            fig.add_vrect(x0=x0 - pd.Timedelta(hours=12), x1=x1 + pd.Timedelta(hours=12),
+                          fillcolor=PANIC_FILL, line_width=0, layer='below', row='all', col=1)
+        fig.update_yaxes(title_text='加權指數', tickformat=',.0f', row=1, col=1)
+        fig.update_yaxes(title_text='台指 VIX', row=2, col=1)
+        fig.update_layout(height=480, hovermode='x unified', showlegend=False,
+                          margin=dict(t=10, b=20, l=50, r=20))
+        show_chart(fig, key='fig_vixtwn')
+    with col_metrics:
+        _vixtwn_metrics(tw_all, data.get('VIX'), taiex_all)
+
+
 # ════════════════════════════════════════════════════════
 def page_equity():
     render_page_intro("equity")
@@ -1721,14 +1822,17 @@ def page_equity():
     else:
         st.info("相關係數計算需至少兩個有效指數序列。")
 
+    _render_vixtwn_section()
+
     # ── 亞洲 VIX 風險監控 ─────────────────────────────────────────────────────
     st.subheader("📡 亞洲 VIX 風險監控")
     st.caption(
-        "美股 VIX（CBOE）vs 韓國 VKOSPI — 兩者共振代表亞太整體恐慌；"
+        "美股 VIX（CBOE）vs 韓國 VKOSPI vs 台指 VIX — 三者共振代表亞太整體恐慌；"
         "單獨走高則為區域性事件。與 HY 利差共振時是降低權益敞口的強信號。"
     )
     _vix_df  = filt('VIX')
     _vkos_df = filt('VKOSPI')
+    _vtw_df  = filt('VIXTWN')
     if _vix_df is not None and not _vix_df.empty:
         fig_avix = go.Figure()
         fig_avix.add_trace(go.Scatter(
@@ -1744,11 +1848,23 @@ def page_equity():
                 name='VKOSPI',
                 hovertemplate='%{x|%Y-%m-%d}<br>VKOSPI: %{y:.1f}<extra></extra>',
             ))
-        fig_avix.add_hrect(y0=20, y1=300, fillcolor='rgba(230,103,103,0.05)',
+        if _vtw_df is not None and not _vtw_df.empty:
+            fig_avix.add_trace(go.Scatter(
+                x=_vtw_df['date'], y=_vtw_df['value'],
+                line=dict(color=TOKENS["serious"], width=1.5),
+                name='台指 VIX',
+                hovertemplate='%{x|%Y-%m-%d}<br>台指 VIX: %{y:.1f}<extra></extra>',
+            ))
+        # A shape counts toward autorange, so a fixed y1=300 squashed every line;
+        # end the band at the data's own peak instead.
+        _ymax = max(float(d['value'].max()) for d in (_vix_df, _vkos_df, _vtw_df)
+                    if d is not None and not d.empty) * 1.08
+        fig_avix.add_hrect(y0=20, y1=max(_ymax, 25), fillcolor='rgba(230,103,103,0.05)',
                            line_width=0, annotation_text='恐慌區 >20',
                            annotation_position='top left')
         fig_avix.update_layout(
-            title='VIX vs VKOSPI 波動率比對', xaxis_title='', yaxis_title='波動率指數',
+            yaxis_range=[0, max(_ymax, 25)],
+            title='VIX vs VKOSPI vs 台指 VIX 波動率比對', xaxis_title='', yaxis_title='波動率指數',
             hovermode='x unified', margin=dict(t=50, b=20, l=40, r=20),
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
         )
@@ -1767,6 +1883,11 @@ def page_equity():
                 st.metric("VKOSPI",
                           f"{_kv:.1f}" if _kv is not None else "N/A",
                           delta=f"{_kv-_kp:+.1f}" if _kv is not None and _kp is not None else None,
+                          delta_color="inverse")
+            if _vtw_df is not None and not _vtw_df.empty:
+                _tv = get_latest(_vtw_df); _tp = get_prev(_vtw_df)
+                st.metric("台指 VIX", f"{_tv:.1f}",
+                          delta=f"{_tv-_tp:+.1f}" if _tp is not None else None,
                           delta_color="inverse")
     else:
         st.warning("VIX 資料無法載入。")
@@ -2015,8 +2136,8 @@ def page_gmi():
         fig_hist.update_yaxes(title_text="YoY %", row=2, col=1)
         show_chart(fig_hist, key='fig_hist')
 
-    # ── 20 指標熱力圖 ──────────────────────────────────────────────────────────
-    st.subheader("19 項指標方向明細")
+    # ── 指標熱力圖 ────────────────────────────────────────────────────────────
+    st.subheader(f"{TOTAL_INDICATORS} 項指標方向明細")
     GROUP_NAMES = {
         "A": "A｜需求與領先活動",
         "B": "B｜貿易與同時流量",
@@ -2027,9 +2148,10 @@ def page_gmi():
         sigs = [s for s in gmi["signals"] if s["group"] == grp]
         raw_sum = gmi["group_scores"][grp]["raw"]
         capped  = gmi["group_scores"][grp]["capped"]
-        cap_note = f"（原始 {raw_sum}，群組上限 5 → 計入 {capped}）" if raw_sum != capped else f"（計入 {capped}）"
+        cap_note = (f"（原始 {raw_sum}，群組上限 {GROUP_CAPS[grp]} → 計入 {capped}）"
+                    if raw_sum != capped else f"（計入 {capped}）")
         st.markdown(f"**{grp_label}** {cap_note}")
-        cols = st.columns(5)
+        cols = st.columns(max(GROUP_CAPS.values()))  # one grid width keeps tiles aligned
         for i, sig in enumerate(sigs):
             with cols[i]:
                 tone = ("neutral" if not sig["has_data"]
@@ -2058,8 +2180,8 @@ def page_gmi():
     with st.expander("方法說明與資料限制"):
         st.markdown("""
 **計分方法**
-- 19 個指標各輸出 0（負向）或 1（正向），分為 A/B/C/D 四組（A:5、B:4、C:5、D:5）。
-- 每組最高計入 5 分（群組上限），避免同質指標堆疊。
+- 20 個指標各輸出 0（負向）或 1（正向），分為 A/B/C/D 四組（A:5、B:4、C:5、D:6）。
+- 每組有計分上限（A/B/C 為 5、D 為 6），避免同質指標堆疊。
 - 擴散比例 = 有效指標得分 ÷ 有效指標數 × 100，按比例計算不受缺失指標影響。
 - 需連續 2 期達到門檻才切換燈號（防假突破）。
 - 有效指標數 < 16 時，標示「低信心」。

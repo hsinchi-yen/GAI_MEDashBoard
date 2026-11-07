@@ -6,6 +6,7 @@ import re
 import time
 from datetime import datetime, timedelta
 from io import BytesIO, StringIO
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -208,6 +209,76 @@ def fetch_taiex_yoy(years_back: int = 12) -> pd.DataFrame:
     except Exception as e:
         logger.error("TAIEX YoY fetch error: %s", e)
         return pd.DataFrame()
+
+
+# ── TAIWAN VIX (臺指選擇權波動率指數) ─────────────────────────────────────────
+
+VIXTWN_URL = "https://www.taifex.com.tw/file/taifex/Dailydownload/vix/log2data_eng/{ym}new.txt"
+_VIXTWN_SEED = Path(__file__).resolve().parent / "data" / "vixtwn_seed.csv"
+
+
+def _parse_vixtwn_text(text: str) -> pd.DataFrame:
+    """TAIFEX daily file: `YYYYMMDD  13450000  <Daily Index>  <Last 1 min AVG>`.
+
+    Columns are separated by runs of tabs and the file starts with two header
+    lines, so any line whose first field is not an 8-digit date is skipped.
+    """
+    rows = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 3 or not re.fullmatch(r"\d{8}", parts[0]):
+            continue
+        try:
+            rows.append((pd.Timestamp(parts[0]), float(parts[2])))
+        except ValueError:
+            continue
+    return pd.DataFrame(rows, columns=["date", "value"])
+
+
+def fetch_vixtwn(months: int = 2, now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Official TAIWAN VIX daily close for the current and previous `months - 1` months.
+
+    TAIFEX keeps only about four months online and answers older ones with a
+    302 to 404.htm, so redirects are treated as "no file". Files are refreshed
+    around 16:10 Taipei time on each trading day.
+    """
+    now = pd.Timestamp(now) if now is not None else pd.Timestamp.now()
+    frames = []
+    for i in range(months):
+        ym = (now - pd.DateOffset(months=i)).strftime("%Y%m")
+        try:
+            res = requests.get(VIXTWN_URL.format(ym=ym), headers={"User-Agent": "Mozilla/5.0"},
+                               timeout=15, allow_redirects=False)
+        except Exception as e:
+            logger.warning("VIXTWN %s fetch error: %s", ym, e)
+            continue
+        if res.status_code != 200:
+            logger.info("VIXTWN %s: HTTP %s (no longer published)", ym, res.status_code)
+            continue
+        frames.append(_parse_vixtwn_text(res.text))
+    frames = [f for f in frames if not f.empty]
+    if not frames:
+        return pd.DataFrame(columns=["date", "value"])
+    df = pd.concat(frames).drop_duplicates("date", keep="last")
+    return df.sort_values("date").reset_index(drop=True)
+
+
+def _vixtwn_seed() -> pd.DataFrame:
+    """Bundled history (see data/VIXTWN_SEED_LICENSE.txt): reconstructed before 2026-08."""
+    df = pd.read_csv(_VIXTWN_SEED)
+    return pd.DataFrame({"date": pd.to_datetime(df["date"], format="%Y-%m-%d"),
+                         "value": df["vix"].astype(float)})
+
+
+def load_vixtwn_history() -> pd.DataFrame:
+    """Seed history merged with every month TAIFEX still serves; official values win.
+
+    Merged here rather than in the DB because bulk writes are INSERT OR IGNORE,
+    which would keep whichever value landed first.
+    """
+    official = fetch_vixtwn(months=4)
+    df = pd.concat([_vixtwn_seed(), official]).drop_duplicates("date", keep="last")
+    return df.sort_values("date").reset_index(drop=True)
 
 
 def fetch_tw_institutional(n_days: int = 5) -> dict:
