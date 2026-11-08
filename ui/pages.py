@@ -28,7 +28,8 @@ def render_verdict(view: dict, history: pd.DataFrame, show_chart, load_evidence)
 
     _html(c.section("怎麼做", "依目前多空判讀與成長／通膨位置的對應框架"))
     _html('<div class="gm-grid">' + c.playbook_card(view["playbook"]) + c.clock_card(view["clock"])
-          + c.alerts_card(view["alerts"], view["stale_count"]) + "</div>")
+          + c.alerts_card(view["alerts"], view["stale_count"])
+          + c.tw_warning_card(view.get("tw_warning") or {}) + "</div>")
 
     _html(c.section("為什麼", "每項皆為可驗證的規則，並非主觀判斷"))
     _html('<div class="gm-grid">'
@@ -202,3 +203,107 @@ GUIDE = """
 def render_guide() -> None:
     st.markdown(GUIDE)
     _html(c.disclaimer())
+
+
+# ── Taiwan early warning ──────────────────────────────────────────────────────
+
+_GROUPS = ("總經壓力", "市場內部", "籌碼", "情緒")
+
+
+def _fmt(v, spec: str, suffix: str = "") -> str:
+    return "—" if v is None else f"{format(v, spec)}{suffix}"
+
+
+def _gauge_card(g: dict) -> str:
+    w = g["window"]
+    rows = [
+        ("站上 MA20／MA60 的上市股", f"{_fmt(g['pct_ma20'], '.0f', '%')}／{_fmt(g['pct_ma60'], '.0f', '%')}"),
+        ("台指 VIX − 美 VIX", _fmt(g["vix_gap"], "+.1f", " 點")),
+        (f"費半相對加權 {w} 日", _fmt(g["sox_rel"], "+.1f", " pp")),
+        (f"台積電相對加權 {w} 日", _fmt(g["tsmc_rel"], "+.1f", " pp")),
+        (f"美 10Y {w} 日", _fmt(g["dgs10_chg"], "+.2f", " pp")),
+        (f"美元指數 {w} 日", _fmt(g["dxy_chg"], "+.1f", "%")),
+        (f"USD/TWD {w} 日", _fmt(g["twd_chg"], "+.1f", "%")),
+    ]
+    items = "".join(f"<li><b>{c.escape(k)}</b> {c.escape(v)}</li>" for k, v in rows)
+    return ('<div class="gm-card"><h4>參考指標（不計入燈號）</h4>'
+            f"<ul>{items}</ul></div>")
+
+
+def _rebuy_card(w: dict) -> str:
+    items = "".join(f"<li>{c.chip('符合' if r['met'] else '未符合', 'bullish' if r['met'] else 'neutral')} "
+                    f"<b>{c.escape(r['id'])} {c.escape(r['name'])}</b></li>"
+                    for r in w["rebuy"]["conditions"])
+    note = "三項都符合後分三批買回，每批間隔至少 5 個交易日。"
+    return f'<div class="gm-card"><h4>買回條件</h4><ul>{items}</ul><p class="gm-sub">{note}</p></div>'
+
+
+def _raw_charts(frame: pd.DataFrame, show_chart) -> None:
+    import plotly.graph_objects as go
+    from ui.theme import TOKENS
+    f = frame.tail(250)
+    specs = [
+        ("上漲／下跌家數（上市股票）", [("上漲", f["adv"], TOKENS["bull"]), ("下跌", f["dec"], TOKENS["bear"])]),
+        ("外資現貨 20 日累計（億）", [("外資", f["fini"].rolling(20, min_periods=16).sum(), TOKENS["accent"])]),
+        ("外資台指期淨未平倉（口，TX 等值）", [("淨部位", f["fut_oi"], TOKENS["serious"])]),
+        ("融資餘額（億）", [("融資", f["margin"], TOKENS["flat"])]),
+        ("成交金額 20 日均（億）", [("20 日均量", f["turnover"].rolling(20, min_periods=20).mean(), TOKENS["accent"])]),
+        ("台指 VIX", [("台指 VIX", f["vixtwn"], TOKENS["serious"])]),
+    ]
+    cols = st.columns(2)
+    for i, (title, traces) in enumerate(specs):
+        if all(s.dropna().empty for _, s, _ in traces):
+            continue
+        fig = go.Figure()
+        for name, s, color in traces:
+            fig.add_trace(go.Scatter(x=s.index, y=s, name=name, mode="lines", line=dict(color=color, width=1.6)))
+        fig.update_layout(title=title, height=260, showlegend=len(traces) > 1, hovermode="x unified")
+        with cols[i % 2]:
+            show_chart(fig, key=f"fig_twwarn_raw_{i}")
+
+
+def render_tw_warning(w: dict, show_chart, load_backtest, params: list[dict]) -> None:
+    from analytics.tw_warning import DISCLAIMER as TW_DISCLAIMER
+    if not w.get("available"):
+        _html(c.tw_warning_card(w))
+        st.info("台股籌碼資料尚未載入。排程器第一次執行時會匯入內建的 10 年歷史。")
+        return
+    _html('<div class="gm-grid">' + c.tw_warning_card(w) + _rebuy_card(w) + _gauge_card(w["gauges"]) + "</div>")
+    if w["level"] != w["level_raw"]:
+        st.caption(f"今天的條件對應「{w['raw_info']['label']}」，燈號要連續成立數日才會改變，以免來回跳動。")
+
+    _html(c.section("九項訊號", "近 10 個交易日內成立過的訊號都計入項數"))
+    _html('<div class="gm-grid">' + "".join(c.tw_signal_list(w["signals"], g) for g in _GROUPS) + "</div>")
+    if w["recent_divergence_days"]:
+        st.caption("最近「指數漲 ≥ 1%、但下跌家數較多」的日子：" + "、".join(w["recent_divergence_days"]))
+
+    fig = charts.warning_timeline(w["history"])
+    if fig:
+        show_chart(fig, key="fig_twwarn_timeline")
+
+    with st.expander("原始數據（近一年）"):
+        _raw_charts(w["frame"], show_chart)
+
+    with st.expander("回測：訊號命中率與持股策略（近 10 年）"):
+        bt = load_backtest()
+        if not bt.get("available"):
+            st.info("歷史資料不足，無法回測。")
+        else:
+            st.caption(f"期間 {bt['start']:%Y-%m-%d} ～ {bt['end']:%Y-%m-%d}。"
+                       "「命中」= 之後 40 個交易日內最多下跌 8% 以上。"
+                       "獨立次數把間隔不到 40 日的訊號日算成同一次；少於 10 次時標示樣本不足。")
+            st.dataframe(bt["hit_rates"], hide_index=True, width="stretch",
+                         column_config={"命中率": st.column_config.NumberColumn(format="%.1f%%")})
+            st.caption("以當天收盤價成交、來回成本 0.59%、不含股息（對一直持有略為不利）。")
+            st.dataframe(bt["strategies"], hide_index=True, width="stretch",
+                         column_config={k: st.column_config.NumberColumn(format="%.1f%%")
+                                        for k in ("年化報酬", "最大跌幅", "平均持股")})
+            st.caption("高點到低點跌超過 12% 的事件")
+            st.dataframe(bt["events"], hide_index=True, width="stretch",
+                         column_config={k: st.column_config.NumberColumn(format="%.1f%%")
+                                        for k in ("跌幅", "橙燈時距高點", "紅燈時距高點")})
+
+    with st.expander("參數（analytics/tw_warning_config.py）"):
+        st.caption("來源 A = 檢討分析中的實際觀察值；P = 建議值，已用前 6 年校準、後 4 年驗證。")
+        st.dataframe(pd.DataFrame(params).astype({"值": str}), hide_index=True, width="stretch")
+    _html(f'<p class="gm-sub" style="margin-top:20px">{c.escape(TW_DISCLAIMER)}</p>')

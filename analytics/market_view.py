@@ -21,6 +21,7 @@ import pandas as pd
 
 from analytics.indicators import REGISTRY, STALE_DAYS, THEMES
 from analytics.trend import breadth, build_radar
+from analytics.tw_warning import evaluate as evaluate_tw_warning
 from macro_index import (
     MIN_VALID, REGIME_GREEN_PCT, REGIME_LABELS, REGIME_RED_PCT, TOTAL_INDICATORS,
     _slice_data_as_of, _to_monthly, compute_macro_index,
@@ -461,6 +462,15 @@ def compute_market_view(data: dict, history: pd.DataFrame | None = None,
     pillars = _pillar_rows(gmi, gmi_prev)
 
     radar = build_radar(data, now)
+    tw_warning = evaluate_tw_warning(data, now=now)
+    alerts = risk_alerts(data, now)
+    if tw_warning.get("available") and tw_warning["level"] != "green":
+        info = tw_warning["info"]
+        alerts.insert(0, {
+            "key": "TW_WARNING", "level": "alert" if tw_warning["level"] in ("orange", "red") else "watch",
+            "title": f"台股預警{info['label']}（{tw_warning['count']}/{tw_warning['n_signals']} 項）",
+            "message": info["action"],
+        })
     stale_count = int(radar["stale"].sum()) if not radar.empty else 0
     stale_share = stale_count / len(radar) if len(radar) else 0.0
 
@@ -483,7 +493,8 @@ def compute_market_view(data: dict, history: pd.DataFrame | None = None,
         "missing":        [s for s in gmi["signals"] if not s["has_data"]],
         "changes":        _signal_changes(gmi, gmi_prev),
         "flip":           flip_distance(gmi),
-        "alerts":         risk_alerts(data, now),
+        "alerts":         alerts,
+        "tw_warning":     tw_warning,
         "clock":          investment_clock(data),
         "playbook":       PLAYBOOK[stance["key"]],
         "radar":          radar,

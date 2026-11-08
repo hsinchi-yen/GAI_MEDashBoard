@@ -158,12 +158,15 @@ def _fetch_fund_delta(fund_name: str, cik: str) -> tuple[dict, str]:
         all_keys = set(cur_map) | set(prev_map)
         delta: dict[str, dict] = {}
         for key in all_keys:
-            c = cur_map.get(key,  {"name": key, "shares": 0, "value_k": 0})
+            c = cur_map.get(key,  {"shares": 0, "value_k": 0})
             p = prev_map.get(key, {"shares": 0, "value_k": 0})
             sd = c["shares"]  - p["shares"]
             vd = c["value_k"] - p["value_k"]
             if sd != 0 or vd != 0:
-                delta[key] = {"name": c["name"], "share_delta": sd, "value_delta_k": vd}
+                # A position sold out is only in the previous filing; take its
+                # name from there instead of showing the bare CUSIP.
+                name = c.get("name") or p.get("name") or key
+                delta[key] = {"name": name, "share_delta": sd, "value_delta_k": vd}
         return delta, accessions[0].get("reportDate", "")
     except Exception as e:
         logger.error("Fund delta error (%s): %s", fund_name, e)

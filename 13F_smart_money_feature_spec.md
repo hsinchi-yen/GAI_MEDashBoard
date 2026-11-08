@@ -336,3 +336,18 @@ _sub_rank UI（新增）             ← 橫向長條圖 + 板塊匯總 + 明細
 
 *本規格書對應系統版本：`dashboard.py`（1983 行）/ `data_fetcher.py`（1445 行）*  
 *生成日期：2026-05-21*
+
+---
+
+## v1.1 變更（2026-11-08）
+
+實作和第 2 節的程式碼有以下不同，以程式為準：
+
+1. **分類邏輯移到 `analytics/smart_money.py`**（`classify_sector`、`build_rank_table`、`sector_net_flow`），`dashboard.py` 只負責畫圖。
+2. **改為整詞比對**：原本用子字串比對，短代號會誤判（`MU` 命中 `CHARTER COMMUNICATIONS`、`LLY` 命中 `ALLY FINL`、`TSM` 命中 `HUNTSMAN`）。
+   13F 的 `nameOfIssuer` 是公司名稱，不是 ticker，所以對照表也移除了 ticker。比對分兩層：先比對公司名稱，比對不到時再看名稱中的產業字詞（`PHARMA*`、`BANCORP`、`OIL` 等）。
+3. **板塊改為 GICS 11 類**，另外保留「半導體」和「ETF」兩類。合併了原本重複的「科技/資訊科技」「醫療/醫療保健」「消費/核心消費」。
+4. **排名同時包含買方和賣方**（`top_buy_value` + `top_sell_value`），可以切換「全部 / 買方 / 賣方」。板塊匯總改為真正的淨流量。表格的 `ProgressColumn` 換成 `NumberColumn`，因為 `ProgressColumn` 不支援負值。
+5. **fetcher 修正**：基金已經全部出清的部位，原本只顯示 CUSIP。現在改用上一季申報中的名稱（2026-Q2 有 29 檔受影響）。
+6. 2026-Q2 的實際名單（167 檔，存在 `tests/data/13f_names_2026q2.txt`）中，不含 ETF 時「其他」的比例從約 75% 降到 1%。
+   這份名單也被用來補對照表，所以下一季的比例會比較高；測試要求的門檻是 ≤ 15%。

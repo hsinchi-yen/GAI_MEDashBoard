@@ -110,9 +110,40 @@ def seed_market(end: pd.Timestamp = NOW) -> None:
     }), ttl_days=30)
 
 
+def tw_flow_dataset(end: pd.Timestamp = NOW, days: int = 2200) -> dict[str, pd.DataFrame]:
+    """Daily Taiwan flows for the early-warning layer, on business days to `end`."""
+    rng = np.random.default_rng(90)
+    dates = pd.bdate_range(end=end.normalize() - pd.Timedelta(days=1), periods=days)
+    days = len(dates)   # a weekend end date yields one fewer business day
+    t = np.arange(days, dtype=float)
+
+    def frame(values):
+        return pd.DataFrame({"date": dates, "value": values})
+
+    adv = 500 + 150 * np.sin(t / 9) + rng.normal(0, 40, days)
+    margin = 3000 * np.exp(0.0004 * t + 0.05 * np.sin(t / 60))
+    return {
+        "tw_adv": frame(adv.round()), "tw_dec": frame((1000 - adv).round()),
+        "tw_pct_ma20": frame(50 + 20 * np.sin(t / 15)), "tw_pct_ma60": frame(50 + 15 * np.sin(t / 30)),
+        "tw_turnover": frame(3000 + 800 * np.sin(t / 40) + rng.normal(0, 150, days)),
+        "tw_fini_net": frame(rng.normal(0, 60, days)),
+        "tw_fini_fut_oi": frame(-30000 + 15000 * np.sin(t / 25)),
+        "tw_margin": frame(margin),
+        "dxy_ice": frame(100 + 3 * np.sin(t / 80)),
+        "sox_daily": frame(4000 * np.exp(0.0006 * t)),
+        "tsmc_daily": frame(300 * np.exp(0.0007 * t)),
+    }
+
+
+def seed_tw_flows(end: pd.Timestamp = NOW) -> None:
+    for key, df in tw_flow_dataset(end).items():
+        db_manager.write(key, df, ttl_days=30, initial=True)
+
+
 def seed_all(bias: float = 0.6, end: pd.Timestamp = NOW) -> None:
     seed_macro(bias, end)
     seed_market(end)
+    seed_tw_flows(end)
 
 
 if __name__ == "__main__":

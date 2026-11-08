@@ -82,6 +82,12 @@ from fetchers.taiwan_sector import (
     fetch_tw_sector_institutional_by_sector,
     SECTOR_NAMES as _TW_SECTOR_NAMES,
 )
+from fetchers.twse_heat import fetch_whale_exit_share
+from fetchers.taiwan_market import (
+    CLOSE_KEEP_DAYS, CLOSES_KEY, SERIES as TW_FLOW_SERIES,
+    fetch_taifex_fini_oi, fetch_tw_market_day, fetch_tw_turnover,
+    load_tw_closes_seed, load_tw_flows_seed, ma_breadth,
+)
 
 FRED_KEY = os.environ.get("FRED_API_KEY", "")
 
@@ -291,6 +297,80 @@ def job_tw_volatility(*, initial: bool = False) -> None:
     backfill = initial or db_manager.max_date("taiex_daily") is None
     _run("taiex_daily", fetch_index_daily_close, ttl_days=7, initial=backfill,
          ticker="^TWII", years_back=6 if backfill else 1)
+
+    job_tw_flows(initial=initial)
+
+
+# ── job: Taiwan flows for the early-warning layer ─────────────────────────────
+
+_YAHOO_DAILY = (("dxy_ice", "DX-Y.NYB"), ("sox_daily", "^SOX"), ("tsmc_daily", "2330.TW"))
+_WARNING_HISTORY_YEARS = 10.5     # the back-test reads 10 years
+
+
+def _history_short(key: str, years: float) -> bool:
+    df = db_manager.read(key)
+    if df is None or df.empty:
+        return True
+    return pd.to_datetime(df["date"]).min() > pd.Timestamp.now() - pd.DateOffset(months=int(years * 12))
+
+
+def _load_tw_flow_seeds() -> None:
+    """Bulk-load the shipped history; INSERT OR IGNORE keeps every stored row."""
+    for key, df in load_tw_flows_seed().items():
+        db_manager.write(key, df, ttl_days=7, initial=True)
+        logger.info("SEED  %-32s %d rows", key, len(df))
+    closes = load_tw_closes_seed()
+    if not closes.empty:
+        db_manager.write(CLOSES_KEY, closes, ttl_days=7, initial=True)
+
+
+def _update_ma_breadth() -> None:
+    """% of stocks above MA20 / MA60 from the rolling close table."""
+    raw = db_manager.read(CLOSES_KEY)
+    if raw is None or raw.empty or "series_key" not in raw:
+        return
+    ratios = ma_breadth(raw.rename(columns={"series_key": "code", "value": "close"}))
+    for col in ("pct_ma20", "pct_ma60"):
+        s = ratios[["date", col]].dropna().tail(5).rename(columns={col: "value"})
+        if not s.empty:
+            db_manager.write(f"tw_{col}", s, ttl_days=7)
+
+
+def job_tw_flows(*, initial: bool = False, now: pd.Timestamp | None = None) -> None:
+    """Breadth, turnover, foreign cash and futures flows, margin, DXY / SOX / TSMC.
+
+    TWSE posts the margin table in the evening, after the 17:00 run, so each run
+    re-reads the last two weekdays; the 02:00 batch then fills the gap. Writes
+    are INSERT OR REPLACE, so re-reading a day is harmless.
+    """
+    if (initial or any(db_manager.max_date(k) is None for k in TW_FLOW_SERIES)
+            or _history_short("taiex_daily", _WARNING_HISTORY_YEARS)):
+        _load_tw_flow_seeds()
+
+    for key, ticker in _YAHOO_DAILY:
+        backfill = initial or db_manager.max_date(key) is None
+        _run(key, fetch_index_daily_close, ttl_days=7, initial=backfill,
+             ticker=ticker, years_back=12 if backfill else 1)
+
+    today = pd.Timestamp(now or pd.Timestamp.now()).normalize()
+    for day in pd.bdate_range(end=today, periods=2):
+        try:
+            parts = fetch_tw_market_day(day)
+        except Exception as e:
+            logger.error("tw market day %s failed: %s", day.date(), e)
+            continue
+        closes = parts.pop("closes", None)
+        for key, df in parts.items():
+            db_manager.write(key, df, ttl_days=7)
+        if closes is not None and not closes.empty:
+            db_manager.write(CLOSES_KEY, closes, ttl_days=7)
+    _update_ma_breadth()
+    db_manager.trim_series(CLOSES_KEY, CLOSE_KEEP_DAYS)
+
+    _run("tw_turnover", fetch_tw_turnover, ttl_days=7, months=2)
+    _run("tw_fini_fut_oi", fetch_taifex_fini_oi, ttl_days=7)
+    # W10 from the 8504 service; its whole (short) history each time, INSERT OR IGNORE.
+    _run("tw_whale_exit", fetch_whale_exit_share, ttl_days=7, initial=True)
 
 
 # ── job: Taiwan sector ────────────────────────────────────────────────────────

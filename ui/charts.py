@@ -113,3 +113,31 @@ def clock_chart(clock: dict | None, height: int = 300) -> go.Figure | None:
         yaxis=dict(range=[-limit, limit], title="通膨動能（標準差）", showgrid=False),
     )
     return fig
+
+
+_LEVEL_COLORS = {1: TOKENS["flat"], 2: TOKENS["serious"], 3: TOKENS["bear"]}
+_LEVEL_NAMES = {0: "綠", 1: "黃", 2: "橙", 3: "紅"}
+
+
+def warning_timeline(history: pd.DataFrame, days: int = 500, height: int = 340) -> go.Figure | None:
+    """TAIEX close with the confirmed warning level shaded behind it."""
+    if history is None or history.empty:
+        return None
+    h = history.tail(days)
+    fig = go.Figure()
+    # One rectangle per run of equal level; green runs stay unshaded.
+    runs = (h["level"] != h["level"].shift()).cumsum()
+    for _, run in h.groupby(runs):
+        lv = int(run["level"].iloc[0])
+        if lv in _LEVEL_COLORS:
+            fig.add_vrect(x0=run.index[0], x1=run.index[-1], fillcolor=_LEVEL_COLORS[lv],
+                          opacity=0.16, line_width=0)
+    fig.add_trace(go.Scatter(
+        x=h.index, y=h["close"], mode="lines", name="加權指數",
+        line=dict(color=TOKENS["accent"], width=2),
+        customdata=np.stack([h["count"], h["level"].map(_LEVEL_NAMES)], axis=1),
+        hovertemplate="%{x|%Y-%m-%d} · %{y:,.0f}<br>訊號 %{customdata[0]} 項 · %{customdata[1]}燈<extra></extra>",
+    ))
+    fig.update_layout(title="加權指數與預警燈號（黃／橙／紅底色）", height=height,
+                      showlegend=False, hovermode="x unified")
+    return fig

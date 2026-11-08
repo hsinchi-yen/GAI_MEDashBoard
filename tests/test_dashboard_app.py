@@ -20,7 +20,7 @@ import db_manager
 from tests import seed_db
 
 APP = str(Path(__file__).resolve().parent.parent / "dashboard.py")
-PAGES = ["verdict", "radar", "demand", "cost", "liquidity", "equity",
+PAGES = ["verdict", "twwarn", "radar", "demand", "cost", "liquidity", "equity",
          "gmi", "rotation", "backtest", "guide"]
 
 
@@ -220,6 +220,15 @@ class TestRotationPage:
         at.run()
         assert any(m.value == "2026Q2" for m in at.metric)
         assert network_attempts == []
+
+    def test_13f_ranking_shows_buys_and_sells(self, app):
+        at = app("rotation")
+        at.session_state["rotation_tab"] = "13F 法人持倉"
+        at.run()
+        assert not at.exception, [e.value for e in at.exception]
+        rank = next(df.value for df in at.dataframe if "訊號" in df.value.columns)
+        assert (rank["淨增持（$M）"] > 0).any() and (rank["淨增持（$M）"] < 0).any()
+        assert set(rank["訊號"]) == {"🟢 買入", "🔴 賣出"}
 
 
 class TestResponsiveness:

@@ -8,6 +8,7 @@
 | 頁面 | 回答的問題 |
 |------|------|
 | **今日判讀** | 五段式多空結論、四大支柱、操作框架、成長／通膨時鐘、風險警示、多空論據、距離燈號翻轉、歷史相同燈號後的報酬、可下載簡報 |
+| **台股預警** | 日頻籌碼與情緒燈號（9 項訊號 + 8504 千張大戶退場占比）、分段持股建議、買回條件、原始數據、10 年回測與參數表 |
 | **趨勢雷達** | 39 項指標的方向、5 年位階、階段與轉折，可依訊號與類別篩選 |
 | **需求與貿易** | 五國 PMI、美國零售、消費者信心、台灣／韓國出口、NDC 領先指標、台積電營收 |
 | **成本與獲利** | OECD CLI、庫存、半導體 PPI、實質利率、CPI/PPI 剪刀差、中國 PPI、原油、銅價 |
@@ -24,6 +25,23 @@
 
 分數 +2 到 −2 對應強烈偏多、偏多、中性、偏空、強烈偏空。規則全部公開在 `analytics/market_view.py`，
 本工具是規則式框架，**非投資建議**。
+
+### 台股預警（日頻，與 GMI 分開）
+
+GMI 是月頻、偏總經的指標，反應不了 1 到 2 個月內發生的槓桿和籌碼變化，所以另外做了一層日頻預警。這層不併入 GMI。
+訊號、燈號和回測的程式在 `analytics/tw_warning*.py`，**所有門檻都在 `analytics/tw_warning_config.py`**，每個參數都標了來源：
+A 是 2026-10 檢討分析的實際觀察值，P 是建議值，用前 6 年校準、後 4 年驗證。
+
+| 燈號 | 條件（近 10 個交易日內成立過的訊號都計入） | 建議 |
+|---|---|---|
+| 綠 | 0～2 項 | 維持原本持股 |
+| 黃 | ≥ 3 項 | 停止加碼，高波動股減碼 10%～20% |
+| 橙 | ≥ 5 項，且跌破 MA20 | 持股降到 7 成 |
+| 紅 | 跌破 MA60，且 MA20 < MA60（和項數無關） | 持股降到 5 成 |
+
+燈號升級要連續 2 天成立，降級要連續 5 天成立。加入 W10 後項數變成 10 項，門檻依比例換算成 4 項和 6 項。
+回測重現了檢討分析的數字：基本機率 15.5%（檢討為 16%）；一直持有年化 15.8%、最大跌幅 31.6%；跌破 MA60 全部賣出 8.2%、26.6%。
+燈號分段減碼是年化 14.6%、最大跌幅 20.9%。燈號只是**分段減碼的參考，不是買賣訊號**。
 
 ---
 
@@ -235,6 +253,9 @@ SQLite 檔案：`/root/macro_dashboard_data/db/indicator_cache.sqlite3`
 │   ├── global_macro.py       # Eastmoney NBS + NDC + Eurostat + 日本
 │   ├── yahoo_finance.py      # Yahoo Finance + Stooq + ETF 輪動
 │   ├── edgar_13f.py          # SEC EDGAR 13F-HR
+│   ├── taiwan_market.py      # 預警用：漲跌家數、成交額、外資現貨／期貨、融資（TWSE / TAIFEX）
+│   ├── twse_heat.py          # 8504 Twse_Top100_Heat 的千張大戶退場占比（W10）
+│   ├── data/tw_flows_seed.csv          # 2015 年起的台股籌碼歷史（tools/backfill_tw_flows.py 產生）
 │   └── taiwan_sector.py      # MI_INDEX20 + BFI82U + BFIAMU
 ├── tests/                    # 單元測試（204 個測試）
 │   ├── test_db_manager.py
@@ -247,7 +268,8 @@ SQLite 檔案：`/root/macro_dashboard_data/db/indicator_cache.sqlite3`
 │   ├── Dockerfile            # ARM64 映像定義
 │   └── deploy.sh             # Yocto 端部署腳本
 ├── tools/
-│   └── post_deploy.py        # 部署後資料遷移（預設只回報，不修改）
+│   ├── post_deploy.py        # 部署後資料遷移（預設只回報，不修改）
+│   └── backfill_tw_flows.py  # 重建台股籌碼 seed（工作站上執行；需要 FinMind token）
 ├── build_arm64.ps1           # Windows 跨編譯腳本（buildx）
 ├── Dockerfile                # x86 Docker 映像定義
 ├── requirements.txt
@@ -268,6 +290,10 @@ SQLite 檔案：`/root/macro_dashboard_data/db/indicator_cache.sqlite3`
 | [Yahoo Finance + Stooq](https://finance.yahoo.com/) | TAIEX / N225 / KOSPI / HSI YoY、加權指數日收、VKOSPI（Stooq fallback）、ETF 量能 |
 | [期交所 TAIFEX](https://www.taifex.com.tw/cht/7/vixDaily3MNew) | 臺指選擇權波動率指數（台指 VIX）每日收盤；官網僅保留近 4 個月，2026-08 前的歷史取自 [salmonmisosoup/leverage-dashboard](https://github.com/salmonmisosoup/leverage-dashboard) 依台指選擇權行情重建的近似值（MIT，見 `fetchers/data/VIXTWN_SEED_LICENSE.txt`） |
 | [TWSE](https://www.twse.com.tw/) | MI_INDEX20（19 類股日收盤）、BFI82U（三大法人市場整體）、BFIAMU（三大法人各類股） |
+| [TWSE](https://www.twse.com.tw/) + [TAIFEX OpenAPI](https://openapi.taifex.com.tw/) | 預警用每日資料：MI_INDEX（漲跌家數、個股收盤）、FMTQIK（成交金額）、BFI82U（外資買賣超）、MI_MARGN（融資餘額）、三大法人台指期未平倉 |
+| [FinMind](https://finmindtrade.com/) | 預警 seed 的 2015 年起融資、外資、台指期（2018-06 起）與加權指數歷史，只在工作站產生 seed 時使用；生產機不需要 token |
+| Yahoo Finance | 預警用：ICE 美元指數 `DX-Y.NYB`、費半 `^SOX`、台積電 `2330.TW` 日 K |
+| 8504 Twse_Top100_Heat | `/api/market/alert-counts`：每日評分分布與千張大戶退場占比（環境變數 `TWSE_HEAT_API_BASE`，預設 `http://127.0.0.1:8000`） |
 | [SEC EDGAR](https://www.sec.gov/cgi-bin/browse-edgar) | 13F-HR 機構持倉（20 大機構） |
 | [Eastmoney datacenter](https://datacenter-web.eastmoney.com/) | 中國 NBS PMI、中國 PPI YoY |
 | [MOFCOM](https://data.mofcom.gov.cn/) | 中國社融增量（信貸脈衝，Legacy TLS） |

@@ -87,6 +87,20 @@ docker logs -f macro-dashboard
 
 Skip on re-deploy if the volume already has data (the volume survives container restarts).
 
+**Taiwan early warning (first deploy after 2026-11-08):** no `--run-now` is needed. The first
+`job_tw_flows` run (17:00 weekdays, or the 02:00 batch) sees the empty `tw_*` series and
+bulk-loads `fetchers/data/tw_flows_seed.csv` and `tw_stock_close_seed.csv.gz` (INSERT OR
+IGNORE, so `taiex_daily` gains its pre-2020 history without rewriting existing rows). To load
+at once instead of waiting:
+
+```bash
+docker exec -i -w /app macro-dashboard python -c "import scheduler; scheduler.job_tw_flows()"
+```
+
+W10 reads the 8504 backend at `TWSE_HEAT_API_BASE` (default `http://127.0.0.1:8000`; both
+containers use `--network host`). If 8504 is down, W10 shows as stale and the other nine
+signals still count.
+
 ---
 
 ## Step 5 — Cleanup (after each deploy)

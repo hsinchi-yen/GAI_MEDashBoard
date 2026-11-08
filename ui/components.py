@@ -276,3 +276,55 @@ def rotation_cards(signals: dict) -> str:
             f'<h4><span style="color:var(--tone)" aria-hidden="true">{TONES[tone]["icon"]}</span> '
             f'{title}</h4><div class="gm-sub">{hint}</div><ul>{items}</ul></div>'))
     return _join('<div class="gm-grid">', *cards, "</div>")
+
+
+# ── Taiwan early warning ──────────────────────────────────────────────────────
+
+_LEVEL_TONE = {"green": "bullish", "yellow": "neutral", "orange": "bearish", "red": "bearish"}
+
+
+def tw_warning_card(w: dict) -> str:
+    """The light, how many signals are on, and the staged-exposure action."""
+    if not w or not w.get("available"):
+        return _join('<div class="gm-card"><h4>台股預警</h4>',
+                     "<p>籌碼與情緒資料準備中。</p></div>")
+    tone = _LEVEL_TONE[w["level"]]
+    info = w["info"]
+    th = w["thresholds"]
+    trend = w["trend"]
+    trend_text = ("收盤在 MA20 之下" if trend["below_fast"] else "收盤在 MA20 之上") + " · " + (
+        "MA60 之下" if trend["below_slow"] else "MA60 之上")
+    rebuy = w["rebuy"]
+    rebuy_text = (f"買回條件 {rebuy['met']}/{len(rebuy['conditions'])} 項"
+                  + ("，可分批買回" if rebuy["active"] else ""))
+    return _join(
+        f'<div class="gm-card" style="{_tone_style(tone)}">',
+        f"<h4>台股預警 {chip(info['label'], tone)}</h4>",
+        f'<div class="gm-big">{w["count"]}/{w["n_signals"]}</div>',
+        f'<div class="gm-sub">近期成立的訊號數 · 黃燈 ≥ {th["watch"]}、橙燈 ≥ {th["reduce"]} 且跌破 MA20</div>',
+        f"<p><b>{escape(info['action'])}</b>（建議持股 {w['exposure']:.0%}）</p>",
+        f'<p class="gm-sub">{escape(trend_text)} · {escape(rebuy_text)} · '
+        f'{w["as_of"]:%Y-%m-%d}</p>',
+        "</div>")
+
+
+def tw_signal_list(signals: list[dict], group: str) -> str:
+    """One group of warning signals with their measured value and rule."""
+    rows = []
+    for s in signals:
+        if s["group"] != group:
+            continue
+        if s["stale"]:
+            badge = chip("過期", "neutral")
+        elif s["on"]:
+            badge = chip("成立", "bearish")
+        elif s["recent"]:
+            badge = chip("近期成立", "neutral")
+        elif s["on"] is None:
+            badge = chip("無資料", "neutral")
+        else:
+            badge = chip("未成立", "bullish")
+        rows.append(f"<li>{badge} <b>{escape(s['id'])} {escape(s['name'])}</b> "
+                    f"{escape(s['value'])}<small>觸發：{escape(s['rule'])}</small></li>")
+    body = f"<ul>{''.join(rows)}</ul>" if rows else "<p>—</p>"
+    return _join(f'<div class="gm-card"><h4>{escape(group)}</h4>', body, "</div>")

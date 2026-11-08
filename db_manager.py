@@ -711,6 +711,27 @@ def trim_to_window(years: int = HISTORY_YEARS) -> int:
         return 0
 
 
+def trim_series(key: str, keep_days: int) -> int:
+    """Delete rows of one series older than its newest date minus ``keep_days``.
+
+    For rolling working sets (per-stock closes) that must not grow for 15 years.
+    """
+    try:
+        with _conn() as con:
+            newest = con.execute("SELECT MAX(day_epoch) FROM ts_rows WHERE indicator_id=?",
+                                 (key,)).fetchone()[0]
+            if newest is None:
+                return 0
+            cur = con.execute("DELETE FROM ts_rows WHERE indicator_id=? AND day_epoch < ?",
+                              (key, newest - keep_days))
+        if cur.rowcount:
+            logger.info("trim_series %-30s  removed %d rows", key, cur.rowcount)
+        return cur.rowcount
+    except Exception as e:
+        logger.error("trim_series %s: %s", key, e)
+        return 0
+
+
 def checkpoint() -> None:
     """
     Force a WAL TRUNCATE checkpoint.
