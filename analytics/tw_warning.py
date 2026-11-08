@@ -61,7 +61,7 @@ SIGNALS: tuple[Signal, ...] = (
     Signal("W7", "融資過熱", "籌碼", ("close", "margin")),
     Signal("W8", "台指 VIX 同漲", "情緒", ("close", "vixtwn")),
     Signal("W9", "超買", "情緒", ("close",)),
-    Signal("W10", "千張大戶退場家數", "籌碼", ("whale",)),
+    Signal("W10", "千張大戶退場占比", "籌碼", ("whale",)),
 )
 REBUY = (("B1", "台指 VIX 恐慌後回落"), ("B2", "融資退場"), ("B3", "外資期貨回補"))
 
@@ -212,17 +212,35 @@ def active_signals(frame: pd.DataFrame) -> list[Signal]:
     return [s for s in SIGNALS if s.id != "W10" or frame["whale"].notna().any()]
 
 
+OPTIONAL_SIGNALS = ("W10",)   # count toward the denominator only on days they have a value
+
+
 def raw_levels(hist: pd.DataFrame, close: pd.Series, n_signals: int,
                cfg: TwWarningConfig = CONFIG, ids: list[str] | None = None) -> pd.DataFrame:
+    """Per day: signals on (with memory), signals counted, and the raw level.
+
+    The nine core signals always count. An optional feed (W10) raises the bar
+    only on days it has a value: before 8504's history reaches 20 days, or while
+    it is stale, the thresholds stay at 3 and 5 of 9 instead of rising for a
+    signal that cannot fire.
+    """
     ids = ids or [s.id for s in SIGNALS[:n_signals]]
     # A precursor counts for `signal_memory` days after it last fired.
     count = hist[ids].fillna(0).rolling(cfg.signal_memory, min_periods=1).max().sum(axis=1)
-    watch_n, reduce_n = cfg.level_counts(n_signals)
+    core = [i for i in ids if i not in OPTIONAL_SIGNALS]
+    n = pd.Series(float(len(core)), index=hist.index)
+    for i in ids:
+        if i in OPTIONAL_SIGNALS:
+            n += hist[i].notna().astype(float)
+    watch_n = np.ceil(cfg.lvl_watch_frac * n - 1e-9)
+    reduce_n = np.ceil(cfg.lvl_reduce_frac * n - 1e-9)
     red = (close < hist["ma_slow"]) & (hist["ma_fast"] < hist["ma_slow"])
     orange = (count >= reduce_n) & (close < hist["ma_fast"])
     yellow = count >= watch_n
     level = np.select([red, orange, yellow], [3, 2, 1], default=0)
-    return pd.DataFrame({"count": count.astype(int), "raw": level}, index=hist.index)
+    return pd.DataFrame({"count": count.astype(int), "n": n.astype(int), "raw": level,
+                         "watch_n": watch_n.astype(int), "reduce_n": reduce_n.astype(int)},
+                        index=hist.index)
 
 
 def apply_hysteresis(raw: pd.Series, confirm: int, release: int) -> pd.Series:
@@ -297,7 +315,7 @@ def _describe(sig: Signal, row: pd.Series, cfg: TwWarningConfig) -> tuple[str, s
     if sig.id == "W9":
         return (f"RSI {_fmt(row['W9_v'], '.0f')}", f"≥ {cfg.rsi_overbought:.0f}")
     return (f"{cfg.whale_exit_window} 日 {_fmt(row['W10_v'], '+.0f')}%",
-            f"警示家數增加 ≥ {cfg.whale_exit_rise_pct:.0f}%")
+            f"8504 評分池中的占比增加 ≥ {cfg.whale_exit_rise_pct:.0f}%")
 
 
 def evaluate(data: dict, cfg: TwWarningConfig = CONFIG, now: pd.Timestamp | None = None) -> dict:
@@ -337,7 +355,7 @@ def evaluate(data: dict, cfg: TwWarningConfig = CONFIG, now: pd.Timestamp | None
                         "recent": recent, "stale": s.id in stale_ids,
                         "value": value, "rule": rule})
 
-    watch_n, reduce_n = cfg.level_counts(len(sigs))
+    last = lv.iloc[-1]
     rebuy = [{"id": b, "name": name, "met": bool(cur[b] == 1)} for b, name in REBUY]
     close = float(frame["close"].iloc[-1])
     recent_div = list(hist.index[(hist["div_day"] == 1)][-5:].strftime("%m/%d"))
@@ -349,8 +367,8 @@ def evaluate(data: dict, cfg: TwWarningConfig = CONFIG, now: pd.Timestamp | None
         "info":       LEVEL_INFO[level_key],
         "exposure":   exposure_for(int(level.iloc[-1]), cfg),
         "count":      int(lv["count"].iloc[-1]),
-        "n_signals":  len(sigs),
-        "thresholds": {"watch": watch_n, "reduce": reduce_n},
+        "n_signals":  int(last["n"]),
+        "thresholds": {"watch": int(last["watch_n"]), "reduce": int(last["reduce_n"])},
         "signals":    signals,
         "trend": {"close": close, "ma_fast": float(cur["ma_fast"]), "ma_slow": float(cur["ma_slow"]),
                   "below_fast": close < cur["ma_fast"], "below_slow": close < cur["ma_slow"]},

@@ -185,7 +185,18 @@ class TestLight:
         data = {"TAIEX_DAILY": pd.DataFrame({"date": days, "value": np.linspace(100, 130, 200)})}
         assert tw.evaluate(data, now=pd.Timestamp("2026-11-07"))["n_signals"] == 9
         data["TW_WHALE_EXIT"] = pd.DataFrame({"date": days, "value": 10.0})
-        assert tw.evaluate(data, now=pd.Timestamp("2026-11-07"))["n_signals"] == 10
+        w = tw.evaluate(data, now=pd.Timestamp("2026-11-07"))
+        assert w["n_signals"] == 10 and w["thresholds"] == {"watch": 4, "reduce": 6}
+
+    def test_short_w10_history_does_not_raise_the_bar(self):
+        # Production 2026-11-08: 7 days of 8504 history, too short for a 20-day change.
+        days = pd.bdate_range(end="2026-11-06", periods=200)
+        data = {"TAIEX_DAILY": pd.DataFrame({"date": days, "value": np.linspace(100, 130, 200)}),
+                "TW_WHALE_EXIT": pd.DataFrame({"date": days[-7:], "value": 6.0})}
+        w = tw.evaluate(data, now=pd.Timestamp("2026-11-07"))
+        assert w["n_signals"] == 9 and w["thresholds"] == {"watch": 3, "reduce": 5}
+        hist = tw.level_history(data)
+        assert (hist["n"] == 9).all()
 
 
 # ── back-test ─────────────────────────────────────────────────────────────────
